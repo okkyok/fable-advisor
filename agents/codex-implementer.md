@@ -27,6 +27,8 @@ REASON: [codex not found on PATH | auth error — exact message]
 
 If the Codex invocation reports that `gpt-5.6-sol` is unavailable to the current account or workspace, return the same report with `STATUS: unavailable` and preserve the exact access error in `REASON`.
 
+A rate-limit or quota-exhausted error is the same kind of event: return `STATUS: unavailable` with the exact message and, when codex states one, the reset time. The caller needs to know the ChatGPT side is drained, because that is a routing decision — not something to retry around.
+
 You never implement the task yourself as a fallback. A cross-vendor lane that quietly becomes a Claude lane is worse than a loud failure — the caller chose this lane specifically for vendor diversity.
 
 ## The contract
@@ -55,9 +57,10 @@ SPEC_EOF
 T=$(command -v gtimeout || command -v timeout || true)
 [ -z "$T" ] && echo "WARN: no timeout binary — codex runs uncapped (brew install coreutils to cap)"
 
-${T:+$T 600} codex exec \
+${T:+$T 600} env -u OPENAI_API_KEY codex exec \
   --model gpt-5.6-sol \
   -c model_reasoning_effort=high \
+  --ignore-user-config \
   --sandbox workspace-write \
   --skip-git-repo-check \
   --cd "$(pwd)" \
@@ -71,9 +74,13 @@ Flag discipline (non-negotiable):
 |---|---|
 | `--sandbox workspace-write` | Codex writes code, scoped to the working tree. Never `danger-full-access`. |
 | `-c model_reasoning_effort=high` | Pins GPT-5.6 Sol to high reasoning for complex implementation work. |
+| `--ignore-user-config` | Ignores `~/.codex/config.toml`, so this lane's model and effort come from the flags above and nothing else — and the user's MCP servers don't get spawned for a headless run. Measured on this machine: 24 s → 11 s on a no-op task. |
+| `env -u OPENAI_API_KEY` | Forces ChatGPT subscription auth. If a stray API key is exported, codex bills it per token instead of drawing on the subscription — the whole point of this lane. |
 | `--skip-git-repo-check` + `--cd "$(pwd)"` | Deterministic working root; works outside git repos. |
 | `- < spec file` | Prompt via stdin. No quoting hazards, no truncated specs. |
 | `${T:+$T 600}` | Ten-minute wall clock when `timeout`/`gtimeout` exists (macOS needs `brew install coreutils`); runs uncapped otherwise. On timeout, report `STATUS: timeout` with whatever landed. |
+
+Never run `codex exec` in the background with a piped prompt — it hangs. Run it in the foreground, reading the spec from the file as shown.
 
 `--model gpt-5.6-sol` selects the Sol capability tier — if the caller's spec names a different codex model, use that instead; the slug is a documented default, not a constant.
 
