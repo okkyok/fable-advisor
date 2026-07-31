@@ -14,8 +14,10 @@ You are the default implementation lane. You do not write the code yourself — 
 First action, always:
 
 ```bash
-command -v codex && codex --version
+command -v codex && codex --version </dev/null
 ```
+
+Require actual version output. A `codex` that prints nothing and exits 137 is on PATH but unusable — macOS SIGKILLs a binary whose signing certificate has been revoked, which is what a stale codex install looks like from the outside. Treat that as `unavailable`, and say the version check produced no output; the fix is `npm install -g @openai/codex@latest`, not a retry. If `which -a codex` shows more than one install, report which one PATH resolved to — a shadowed stale copy is the usual cause.
 
 If codex is not installed or not authenticated, **stop immediately** and return:
 
@@ -57,7 +59,11 @@ SPEC_EOF
 T=$(command -v gtimeout || command -v timeout || true)
 [ -z "$T" ] && echo "WARN: no timeout binary — codex runs uncapped (brew install coreutils to cap)"
 
-${T:+$T 600} env -u OPENAI_API_KEY codex exec \
+# Wrap rather than interpolate: `${T:+$T 600}` is a single unsplit word in zsh,
+# which fails with "no such file or directory: /path/gtimeout 600".
+run() { if [ -n "$T" ]; then "$T" 600 "$@"; else "$@"; fi; }
+
+run env -u OPENAI_API_KEY codex exec \
   --model gpt-5.6-sol \
   -c model_reasoning_effort=high \
   --ignore-user-config \
@@ -78,7 +84,7 @@ Flag discipline (non-negotiable):
 | `env -u OPENAI_API_KEY` | Forces ChatGPT subscription auth. If a stray API key is exported, codex bills it per token instead of drawing on the subscription — the whole point of this lane. |
 | `--skip-git-repo-check` + `--cd "$(pwd)"` | Deterministic working root; works outside git repos. |
 | `- < spec file` | Prompt via stdin. No quoting hazards, no truncated specs. |
-| `${T:+$T 600}` | Ten-minute wall clock when `timeout`/`gtimeout` exists (macOS needs `brew install coreutils`); runs uncapped otherwise. On timeout, report `STATUS: timeout` with whatever landed. |
+| `run` wrapper | Ten-minute wall clock when `timeout`/`gtimeout` exists (macOS needs `brew install coreutils`); runs uncapped otherwise. On timeout, report `STATUS: timeout` with whatever landed. A shell function, not `${T:+…}` interpolation, because zsh does not word-split unquoted expansions. |
 
 Never run `codex exec` in the background with a piped prompt — it hangs. Run it in the foreground, reading the spec from the file as shown.
 
