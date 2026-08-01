@@ -92,3 +92,29 @@ One honest caveat: when the deliverable came from `fable-implementer`, the revie
 ## Verification
 
 Reports are claims, not evidence. Before accepting any lane's work: read the diff, and re-run the verification command (or spot-check its quoted output against the working tree). "Should work", "tests should pass", or a report with no command output means the task is not done. A lane that reports a spec gap gets a corrected spec, not a "use your judgment".
+
+## Routing ledger
+
+Every routing decision is a data point for tuning this doctrine — the spawn floor, the exception boundaries, and the failover frequency are all calibrated from it. The architect appends one JSON line to `~/.claude/fable-advisor/routing.jsonl` (outside this public repo — ledger entries contain task details and must never be committed here) at each of these moments:
+
+- a delegated task reaches its final outcome (verified, escalated, or abandoned)
+- a task is **kept in-session via an exception** — these entries are what calibrate exceptions 1, 2, and 5
+- a failover fires (quota, rate limit, `unavailable`, `timeout`)
+
+Fields:
+
+```json
+{"ts":"<ISO8601>","task":"<short label>","class":"commit|implement|explore|ingest|review|hardest","lane":"codex-implementer|fable-implementer|claude-committer|fable-advisor|architect","exception":null,"outcome":"success|spec-retry|escalated|failover|abandoned","attempts":1,"duration_s":90,"note":""}
+```
+
+- `lane: "architect"` with `exception: 1–5` records work kept in-session; `duration_s` is the actual time it took, so exception-2 claims are checkable against the spawn floor.
+- `outcome: "spec-retry"` means the lane failed once and got a corrected spec; put the one-line cause of the spec gap in `note`. `"escalated"` means it moved to `fable-implementer`; `"failover"` means quota/availability re-routing (name the direction in `note`).
+- `attempts` counts spec submissions to the final lane; `duration_s` is a rough wall-clock estimate, not a stopwatch reading.
+
+Append with a plain shell redirect — no jq, no wrapper script:
+
+```bash
+echo '{"ts":"2026-08-01T10:00:00+09:00","task":"add retry to sync client","class":"implement","lane":"codex-implementer","exception":null,"outcome":"success","attempts":1,"duration_s":180,"note":""}' >> ~/.claude/fable-advisor/routing.jsonl
+```
+
+Logging is part of finishing the task, not optional telemetry — an unlogged delegation is invisible to the next retro. But keep it to one line per outcome; the ledger records decisions, not narration.
