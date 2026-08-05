@@ -73,6 +73,45 @@ Implementers share none of your conversation context. Every delegation prompt ca
 
 A spec you can't finish writing is a signal the decision isn't made yet — that's architect work, not a reason to hand the ambiguity to a cheaper model.
 
+## Context inheritance grades
+
+Inherited context is safe in proportion to how falsifiable it is. Four grades, in increasing order of what they carry and decreasing order of what the receiver can check:
+
+| Grade | Carries | Can the receiver falsify it? |
+|---|---|---|
+| `blind` | The artifact alone — the diff, the stated goal | Yes, completely |
+| `facts` | + tool-derived facts: impact set, test output, which lane produced the diff | Yes, by recomputing them |
+| `briefed` | + the producing agent's claims: "X is safe because Y", "that file is unrelated" | **No — unverified belief** |
+| `full` | + conversation state: options ruled out, decisions already made | No — path-dependent and unverifiable |
+
+**The deciding rule: producers inherit, judges are cut off — but a judge always gets the target and the criterion. What it must not inherit is the process.** A wrong prior costs a producer little, because verification comes after it. A wrong prior costs a judge everything, because removing the prior *is* the verification.
+
+When the grade isn't obvious, one test: **does this widen the receiver's attention or narrow it?** An impact set widens. "That file is unrelated" narrows. Widening inherits; narrowing does not.
+
+Defaults:
+
+- `codex-implementer`, `fable-implementer`, `claude-committer` → `facts`. The five-part spec is already a facts-grade payload; keep it that way.
+- `fable-advisor` at a commitment boundary → `facts`
+- `fable-advisor` at final review → `facts` on the first pass, `briefed` only on the reconcile pass (see below)
+- Work kept in-session under exception 1 → `full` by definition; that is what exception 1 *means*
+
+Record the grade in the ledger (`ctx`). Never raise the grade mid-task without first putting the lower-grade output on the record.
+
+### Passing an impact set without narrowing attention
+
+Whenever a spec or a review carries a tool-derived impact set, label it as a floor, not a ceiling:
+
+> Impact set (**the minimum to check, not the complete set**): …
+
+An over-predicting impact analysis is the right kind of wrong here. A tight one that misses a caller is the wrong kind.
+
+### Retries carry inverted claims, never the process
+
+A lane that failed once gets a corrected spec. The previous attempt is `briefed` material and must arrive polarity-inverted, or the next attempt inherits the same blind spot:
+
+> ✗ "The previous attempt tried solving this in the cache layer and the tests failed."
+> ✓ "The previous attempt *believed* the cache layer could solve this. That belief produced failure Y. Treat the premise as false."
+
 ## Parallelism
 
 Independent specs (no shared files, no ordering dependency) launch as parallel agents in a single message. Sequential chains and single-file surgery stay serial. For high-stakes work, run `codex-implementer` and `fable-implementer` on the same spec and let the architect pick the stronger diff — two model families, one judged result.
@@ -89,6 +128,36 @@ Pass it the decision (or, for final review, the diff and the stated goal), the c
 
 One honest caveat: when the deliverable came from `fable-implementer`, the reviewer and the implementer are the same model. The final review is still worth it — it reads the diff in a clean context, against the goal rather than the conversation — but it is a fresh-eyes check there, not an independent-model check. Cross-vendor independence comes from the codex lane.
 
+### The final review runs in two passes
+
+Independence comes from ordering, not isolation. The reviewer can have both a clean read *and* the implementer's claims — as long as the clean read is on the record first.
+
+1. **Pass 1 — `facts`.** Spawn `fable-advisor` with the diff, the stated goal, the constraints, the *name* of the lane that produced it, and the silence gap (below). No implementer report, no conversation. It returns a **numbered findings list** and a verdict.
+2. **Pass 2 — `briefed`.** Continue the *same* agent with `SendMessage`, handing it the implementer's claims as a falsification list, not as background. It answers two questions only: which numbered findings die, and which claims now look doubtful. **A finding may be withdrawn only against named file:line evidence — "the implementer says it's handled" is not evidence.**
+
+Pass 2 is short: same agent, same context, nothing to re-read. It costs a fraction of a second review, and pass 1 cannot be retro-edited by what pass 2 reveals.
+
+If your harness can't continue a finished subagent, spawn pass 2 fresh and paste the pass-1 findings back verbatim. What makes this work is that the clean read is already fixed in writing — not that it lives in the same context.
+
+The lane's *identity* is a fact and travels in pass 1. The lane's *report* is a claim and waits for pass 2.
+
+### The silence gap
+
+The most dangerous thing a summary carries is what it silently omits: the implementer never considered concurrency, so its report contains no concurrency, so the reviewer's attention never goes there. A summary cannot report its own blind spots — so construct them:
+
+```
+impact set   = changed files ∪ their callers, dependents, and covering tests
+               (any structural query that resolves symbols across the repo:
+                a call-graph or code-intelligence MCP, an LSP, or grep on the
+                changed symbol names — the source doesn't matter, the coverage does)
+mentioned    = files in the diff ∪ files the implementer's report names
+silence gap  = impact set − mentioned
+```
+
+Files structurally inside the blast radius that no agent has said one word about. That is the reviewer's priority queue, and it is anchor-free by construction: it came from the code, not from anyone's account of the code.
+
+`fable-advisor` has `Read, Grep, Glob` and no Bash or MCP — **the architect computes the gap and passes the paths**; the advisor reads those files itself. An empty gap is a result worth stating in pass 1, not a step to skip.
+
 ## Verification
 
 Reports are claims, not evidence. Before accepting any lane's work: read the diff, and re-run the verification command (or spot-check its quoted output against the working tree). "Should work", "tests should pass", or a report with no command output means the task is not done. A lane that reports a spec gap gets a corrected spec, not a "use your judgment".
@@ -104,17 +173,56 @@ Every routing decision is a data point for tuning this doctrine — the spawn fl
 Fields:
 
 ```json
-{"ts":"<ISO8601>","task":"<short label>","class":"commit|implement|explore|ingest|review|hardest","lane":"codex-implementer|fable-implementer|claude-committer|fable-advisor|architect","exception":null,"outcome":"success|spec-retry|escalated|failover|abandoned","attempts":1,"duration_s":90,"note":""}
+{"ts":"<ISO8601>","task":"<short label>","class":"commit|implement|explore|ingest|review|hardest","lane":"codex-implementer|fable-implementer|claude-committer|fable-advisor|architect","exception":null,"ctx":"blind|facts|briefed|full|facts→briefed","outcome":"success|spec-retry|escalated|failover|abandoned","attempts":1,"duration_s":90,"note":""}
 ```
 
 - `lane: "architect"` with `exception: 1–5` records work kept in-session; `duration_s` is the actual time it took, so exception-2 claims are checkable against the spawn floor.
+- `ctx` is the context inheritance grade that was actually passed. A two-pass final review logs `"facts→briefed"`.
 - `outcome: "spec-retry"` means the lane failed once and got a corrected spec; put the one-line cause of the spec gap in `note`. `"escalated"` means it moved to `fable-implementer`; `"failover"` means quota/availability re-routing (name the direction in `note`).
 - `attempts` counts spec submissions to the final lane; `duration_s` is a rough wall-clock estimate, not a stopwatch reading.
 
 Append with a plain shell redirect — no jq, no wrapper script:
 
 ```bash
-echo '{"ts":"2026-08-01T10:00:00+09:00","task":"add retry to sync client","class":"implement","lane":"codex-implementer","exception":null,"outcome":"success","attempts":1,"duration_s":180,"note":""}' >> ~/.claude/fable-advisor/routing.jsonl
+echo '{"ts":"2026-08-01T10:00:00+09:00","task":"add retry to sync client","class":"implement","lane":"codex-implementer","exception":null,"ctx":"facts","outcome":"success","attempts":1,"duration_s":180,"note":""}' >> ~/.claude/fable-advisor/routing.jsonl
 ```
 
 Logging is part of finishing the task, not optional telemetry — an unlogged delegation is invisible to the next retro. But keep it to one line per outcome; the ledger records decisions, not narration.
+
+## Calibration: when to retire the two-pass review
+
+The two-pass review and the silence gap earn their cost only if anchoring actually happens. Decide that from the ledger, not from impression — and decide it on a date, or the machinery outlives its justification by default.
+
+Count only **substantive deliverables**: a diff touching three or more files, or any non-trivial logic change. A one-line fix can never produce an anchoring event and must not dilute the sample.
+
+A final review logs one line, with the review-specific counters in place of `duration_s` detail:
+
+```json
+{"ts":"…","task":"…","class":"review","lane":"fable-advisor","exception":4,"ctx":"facts→briefed","outcome":"success","attempts":1,"duration_s":120,"note":"p1=4 killed_ev=1 killed_assert=0 gap=3 gap_hit=1 verdict_changed=no"}
+```
+
+- `p1` — findings returned by pass 1
+- `killed_ev` — pass-1 findings withdrawn against named evidence
+- `killed_assert` — pass-1 findings the advisor tried to withdraw on the implementer's word alone. **This is the anchoring event.** Any non-zero value is the mechanism catching exactly what it exists for
+- `gap` / `gap_hit` — silence gap size, and how many real defects were found inside it
+- `verdict_changed` — whether pass 2 moved ship / fix-first / rethink
+
+**Review at 10 substantive deliverables or 2026-09-30, whichever comes first.**
+
+Two-pass review — read the two kill columns together, not separately:
+
+| `killed_ev` | `killed_assert` | Read as | Action |
+|---|---|---|---|
+| ~0 | 0 | Pass 2 changes nothing in either direction | **Retire it.** Collapse to a single `facts` pass — note the collapse is to facts-only, *not* back to a briefed single pass: zero on both columns means the claims were not informative either |
+| >0 | 0 | The claims are honest and useful; pass 2 is killing false positives | Keep — it is paying for itself in reviewer precision |
+| any | >0 | Anchoring is real and was caught | Keep, and stop re-litigating this |
+
+Silence gap — an empty gap and a noisy gap both argue for retirement, but they have different fixes:
+
+| Observation over 10 | Read as | Action |
+|---|---|---|
+| Gap nearly always empty | Implementers already cover their own blast radius | Retire the computation; the reports are doing the job |
+| Gap large, `gap_hit` stays 0 | The impact query is producing noise, not attention | Tighten the query first; retire only if a tighter query still finds nothing |
+| `gap_hit` > 0 even occasionally | It is finding what summaries hide | Keep — it is the cheaper half of the mechanism |
+
+If both retire, one thing survives and costs nothing to follow: implementers get `facts`; judges get the target and the criterion and never the process.

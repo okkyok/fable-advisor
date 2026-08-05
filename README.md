@@ -8,11 +8,11 @@ Claude Code lets every subagent run on a different model — and lets the sessio
 |---|---|---|---|
 | Routine | **GPT-5.6 Sol** (high reasoning) | `codex-implementer` agent (default) | The spec fully determines the outcome — Codex does the typing via the [Codex CLI](https://github.com/openai/codex) |
 | High-complexity | **Fable 5** | `fable-implementer` agent | One-off tasks where judgment the spec can't capture decides the outcome: subtle concurrency, hard debugging, security-sensitive paths, wide refactors |
-| Review | **Fable 5** | `fable-advisor` agent | Commitment boundaries, and **always once at the end** — the advisor reviews the accumulated changes before the architect reports done |
+| Review | **Fable 5** | `fable-advisor` agent | Commitment boundaries, and **always once at the end** — the advisor reviews the accumulated changes in two passes, clean read first, before the architect reports done |
 
 Tokens route by capability: Opus emits judgment and specs, the cheap cross-vendor lane emits the bulk of the code, and Fable — the most expensive model available — is spent only where it changes outcomes: the hardest implementations and the final review. Because the routine lane is a *different model family* than the architect, cross-vendor review is built into the routing, not bolted on. For high-stakes work, run `codex-implementer` and `fable-implementer` on the same spec and let the architect pick the stronger diff.
 
-The plugin ships the **orchestration skill** — the routing doctrine that teaches the session when to use each lane, the cost discipline that keeps expensive-model token volume minimal (emit judgment not volume, keep context lean, reason once then hand off), the five-part spec contract that makes context-free delegation safe, and the verification rules that keep every lane honest.
+The plugin ships the **orchestration skill** — the routing doctrine that teaches the session when to use each lane, the cost discipline that keeps expensive-model token volume minimal (emit judgment not volume, keep context lean, reason once then hand off), the five-part spec contract that makes context-free delegation safe, the context inheritance grades that decide what a receiving agent may and may not be told, and the verification rules that keep every lane honest.
 
 ## Install
 
@@ -68,7 +68,9 @@ and get a fable-advisor review before reporting any deliverable done.
 
 ## Commitment boundaries and the final review
 
-Even the architect gets a second opinion. The `fable-advisor` agent is a read-only skeptic — consulted before architecture decisions, migrations, API designs, whenever a problem has resisted two attempts, and **always once at the end of a deliverable**, where it reads the accumulated diff with fresh eyes, against the stated goal rather than the conversation, and returns ship / fix-first / rethink. It never implements. It sees the code fresh, without your conversation's accumulated assumptions — that context-clean skepticism is what the final review buys.
+Even the architect gets a second opinion. The `fable-advisor` agent is a read-only skeptic — consulted before architecture decisions, migrations, API designs, whenever a problem has resisted two attempts, and **always once at the end of a deliverable**, where it reads the accumulated diff against the stated goal rather than the conversation, and returns ship / fix-first / rethink. It never implements.
+
+The final review runs in **two passes**, because a reviewer that inherits the implementer's framing inherits its blind spots. Pass 1 is `facts` grade: the diff, the goal, the constraints, and a *silence gap* — files structurally inside the blast radius that nobody's report mentions — and it returns numbered findings. Pass 2 hands over the implementer's claims as a list of assertions to falsify, and a finding may only be withdrawn against named file:line evidence. Independence comes from the ordering, not from starving the reviewer: the clean read is on the record before the claims arrive. The doctrine ships with dated retreat conditions so the second pass can be retired on ledger evidence if anchoring never shows up.
 
 ## Advisor-only mode (the original pattern)
 
