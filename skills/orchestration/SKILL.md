@@ -26,13 +26,14 @@ What stays with the architect regardless of cost: decomposition, interface desig
 | Routine | GPT-5.6 Sol (high reasoning) | `codex-implementer` agent | The spec fully determines the outcome: boilerplate, wiring, CRUD, mechanical edits, straightforward features. **Default lane.** Requires the codex CLI. |
 | High-complexity | Fable 5 | `fable-implementer` agent | The outcome depends heavily on judgment the spec can't capture: subtle concurrency, non-trivial algorithms, security-sensitive paths, hard debugging, wide-blast-radius refactors — or the routine lane has already failed the task once. One-off escalations, never the default. |
 | Floor | Claude Haiku 4.5 | `claude-committer` agent | Mechanical, fully-determined edits below the codex spawn floor but too repetitive for the architect's own context: bulk renames, import fixes, applying one known pattern across many files. Nothing that requires a decision. |
+| Failover | Claude Sonnet 5, `effort: high` pinned | `failover-implementer` agent | Not selected by task class — the sole fixed target when codex itself returns `unavailable`, `timeout`, rate-limit, or quota-exhausted. Never `claude-committer`, never `fable-implementer`. See Quota failover below. |
 | Review | Fable 5 | `fable-advisor` agent | Not an implementation lane. Commitment boundaries and the mandatory end-of-deliverable review — see below. |
 
 Deciding rule: how much does the outcome depend on judgment the spec can't capture? Little → the default codex lane; you will verify anyway. A lot, and mistakes are costly → escalate to `fable-implementer`, or keep that piece with the architect. A routine-lane task that fails its spec once gets a corrected spec; twice, it escalates to Fable — repetition is evidence the task was misclassified.
 
 The codex lane is also the cross-vendor half of the pattern: its output comes from a non-Anthropic family, so the Claude architect's verification and the Fable review are genuine cross-vendor checks, not same-family self-review.
 
-If the codex lane returns `unavailable` or `timeout`, re-route the same spec to `fable-implementer` and say so explicitly in your report — never quietly absorb the substitution or the cost change.
+If the codex lane returns `unavailable` or `timeout`, re-route the same spec to `failover-implementer` — see Quota failover below for why this is a fixed, pinned-effort target rather than the class-dependent Fable escalation — and say so explicitly in your report; never quietly absorb the substitution or the cost change.
 
 ## Task classes and the Claude-side exceptions
 
@@ -59,7 +60,11 @@ None of these apply? It goes to codex. "It felt faster to just do it" is excepti
 
 ### Quota failover
 
-The two subscriptions have independent limits, and codex-by-default means the ChatGPT side is now the one that gets drained first. When codex returns a rate-limit or quota error, treat it exactly like `unavailable`: re-route to the Claude lane, **and say so in the report** — a silent failover turns a routing policy into a cost surprise. If the failover fires more than once in a session, stop and tell the user which side is exhausted; the correct fix is a routing decision, not more retries.
+The two subscriptions have independent limits, and codex-by-default means the ChatGPT side is now the one that gets drained first. When codex returns a rate-limit, quota, `unavailable`, or `timeout` error, re-route the same spec to `failover-implementer` — a dedicated agent with `model: sonnet` and `effort: high` pinned in its own frontmatter. That pin is deliberate: this lane's effort is fixed and does not inherit, track, or get pulled up/down by whatever the architect's own session effort is set to (see Architect effort below) — it is always exactly `high`, independent of session state. It is a single fixed target: never a choice between `claude-committer` and `fable-implementer` by task class, and never Fable — Fable stays reserved for deliberate `hardest`-class escalation and the final review. **Say so in the report** — a silent failover turns a routing policy into a cost surprise. If the failover fires more than once in a session, stop and tell the user which side is exhausted; the correct fix is a routing decision, not more retries.
+
+### Architect effort
+
+The architect's own session effort is a separate knob from any lane's effort — raising or lowering it never touches `failover-implementer`'s pinned `effort: high`, or any other agent's frontmatter-pinned effort. Default to whatever the session started at (normally `high`). Ask the user to raise it to `xhigh` for one specific high-stakes judgment call, not the whole session, when: the decision is architecturally hard to reverse (schema or API shape, a data-migration design), the exception classification itself is genuinely ambiguous rather than just unfamiliar, or a lane has already failed the same task twice and the architect is about to take it on directly. There is no in-session lever to do this automatically — Claude Code's effort control (`/effort`) is an interactive command the user runs, not something callable from a tool mid-session — so the architect's job is to name the moment and the reason, then drop back to the session default once the call is made.
 
 ## The spec contract
 
