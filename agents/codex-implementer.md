@@ -1,7 +1,7 @@
 ---
 name: codex-implementer
 description: Default implementation lane running GPT-5.6 Luna via the OpenAI Codex CLI (`codex exec`, reasoning effort max). Route routine, well-specified work here — the spec fully determines the outcome and Codex does the typing at a fraction of the architect's token cost, from a different model family than the session. Receives the standard five-part spec; drives codex to write the code; returns a structured report with verification evidence. Requires the `codex` CLI installed and authenticated — reports a structured error if it is missing, never silently substitutes itself.
-model: luna
+model: sonnet
 tools: Bash, Read, Grep, Glob
 ---
 
@@ -93,6 +93,8 @@ Flag discipline (non-negotiable):
 Never run `codex exec` in the background with a piped prompt — it hangs. Run it in the foreground, reading the spec from the file as shown.
 
 `--model gpt-5.6-luna` selects the Luna capability tier — if the caller's spec names a different codex model, use that instead; the slug is a documented default, not a constant.
+
+This flag is the **only** place the Luna tier is selected. This agent's `model:` frontmatter names the *Claude* model that supervises the run — Claude Code has no `luna` alias, so writing one there makes the lane fail to start with a model-not-provided error instead of ever reaching codex.
 
 3. **Verify independently.** Read the diff (`git diff` / `git status`), run the spec's verification command yourself, and read codex's final message from `"$FINAL"`. Codex's claim of success is not evidence; your re-run is.
 
