@@ -1,6 +1,6 @@
 ---
 name: orchestration
-description: Routing doctrine for the architect-as-orchestrator pattern — how an Opus session delegates routine implementation to a cheaper cross-vendor lane, escalates high-complexity one-offs to Fable, and gets every deliverable reviewed by the Fable advisor before reporting done. Codex is the default lane; work stays Claude-side only under five named exceptions. USE WHEN delegating implementation work, classifying a task as commit/implement/explore/ingest/review/hardest, deciding whether something is worth a codex round trip or should stay in-session, choosing between codex-implementer/fable-implementer/claude-committer lanes, writing a spec for a subagent, deciding whether to consult fable-advisor, handling a codex quota or rate-limit failover, managing session cost or token spend, or running any multi-task build where the session is the architect.
+description: Routing doctrine for the architect-as-orchestrator pattern — how an Opus session delegates routine implementation to a cheaper cross-vendor lane, escalates high-complexity one-offs to Fable, and gets every deliverable reviewed by the Fable advisor before reporting done. Codex is the default lane; work stays Claude-side only under five named exceptions. USE WHEN delegating implementation work, classifying a task as commit/implement/explore/ingest/review/hardest, deciding whether something is worth a codex round trip or should stay in-session, choosing between codex-implementer/fable-implementer/claude-committer lanes, setting the codex reasoning effort for a task, writing a spec for a subagent, deciding whether to consult fable-advisor, handling a codex quota or rate-limit failover, managing session cost or token spend, or running any multi-task build where the session is the architect.
 ---
 
 # Orchestration — the architect's routing doctrine
@@ -23,7 +23,7 @@ What stays with the architect regardless of cost: decomposition, interface desig
 
 | Lane | Producer | Invoke | Route here when |
 |---|---|---|---|
-| Routine | GPT-5.6 Luna (max reasoning) | `codex-implementer` agent | The spec fully determines the outcome: boilerplate, wiring, CRUD, mechanical edits, straightforward features. **Default lane.** Requires the codex CLI. |
+| Routine | GPT-5.6 Luna (reasoning effort by task class — see Codex lane effort) | `codex-implementer` agent | The spec fully determines the outcome: boilerplate, wiring, CRUD, mechanical edits, straightforward features. **Default lane.** Requires the codex CLI. |
 | High-complexity | Fable 5 | `fable-implementer` agent | The outcome depends heavily on judgment the spec can't capture: subtle concurrency, non-trivial algorithms, security-sensitive paths, hard debugging, wide-blast-radius refactors — or the routine lane has already failed the task once. One-off escalations, never the default. |
 | Floor | Claude Haiku 4.5 | `claude-committer` agent | Mechanical, fully-determined edits below the codex spawn floor but too repetitive for the architect's own context: bulk renames, import fixes, applying one known pattern across many files. Nothing that requires a decision. |
 | Failover | Claude Sonnet 5, `effort: high` pinned | `failover-implementer` agent | Not selected by task class — the sole fixed target when codex itself returns `unavailable`, `timeout`, rate-limit, or quota-exhausted. Never `claude-committer`, never `fable-implementer`. See Quota failover below. |
@@ -47,6 +47,24 @@ This session runs a Claude subscription and a ChatGPT subscription side by side,
 | `ingest` | Reading long material: logs, dumps, docs, transcripts | codex. Never route here for context economy reasons alone — high token volume is exactly what the ChatGPT side is for |
 | `review` | Adversarial checking of a diff or design | codex first (independent family), then `fable-advisor` as the final gate |
 | `hardest` | Judgment-dominated work, or a task the routine lane already failed twice | `fable-implementer` — the one class that is Claude-side by default |
+
+### Codex lane effort
+
+The codex lane ran pinned at `max` until 2026-08-10. The ledger never showed that pin preventing a failure: across 59 successful `implement` runs and 6 spec-retries, the retries traced to spec gaps, sandbox reach, and one procedural miss — not one of them to reasoning depth. A depth setting that costs latency on every call and has no measured save is not a default — so effort is now set per class, and `max` has to be earned.
+
+| Class | Effort | Why |
+|---|---|---|
+| `implement` | `high` | The default. The spec determines the outcome and the architect verifies afterwards; depth past `high` buys wall clock, not correctness |
+| `implement`, exceptional | `max` | Only when one holds: **(a)** the change spans three or more files, **(b)** the spec deliberately leaves interface design to the implementer, or **(c)** it is the second attempt after a `spec-retry` |
+| `commit` | `low` | The spec names the change literally. Rare in this lane anyway — exception 2 keeps almost all of this class in-session |
+| `explore` | `medium` | The output is a location report, and the architect can check it against the tree cheaply |
+| `ingest` | `medium` | The failure mode is missing something. That is context coverage, and reasoning depth does not fix it |
+
+Any class not listed — `review` sent to codex for an independent-family read — takes the default `high`.
+
+Name the value on an `EFFORT:` line next to the five-part spec; the lane runs `high` when the line is absent. **When you use `max`, name which of (a)/(b)/(c) applies**, in the prompt and in the ledger `note`, the same way a Claude-side exception gets a number. "This one looks hard" is not one of the three.
+
+Calibrate at 20 `implement` runs at `high`: if no spec-retry in that window has reasoning depth as its cause, tighten the `max` conditions further; if two or more do, move the default back up and record which condition was missing.
 
 ### The five exceptions — keep it on the Claude side only when one applies
 
@@ -75,6 +93,8 @@ Implementers share none of your conversation context. Every delegation prompt ca
 3. **Interfaces** — signatures, types, or API shapes the code must match
 4. **Constraints** — project conventions, things not to touch
 5. **Verification** — the command(s) that prove it works
+
+For the codex lane, one routing line rides alongside the spec — `EFFORT: low|medium|high|max`, per Codex lane effort above. It is not a sixth spec part: the spec says what to build, the effort line says how deep the lane thinks about it.
 
 A spec you can't finish writing is a signal the decision isn't made yet — that's architect work, not a reason to hand the ambiguity to a cheaper model.
 
@@ -178,10 +198,11 @@ Every routing decision is a data point for tuning this doctrine — the spawn fl
 Fields:
 
 ```json
-{"ts":"<ISO8601>","task":"<short label>","class":"commit|implement|explore|ingest|review|hardest","lane":"codex-implementer|fable-implementer|claude-committer|fable-advisor|architect","exception":null,"ctx":"blind|facts|briefed|full|facts→briefed","outcome":"success|spec-retry|escalated|failover|abandoned","attempts":1,"duration_s":90,"note":""}
+{"ts":"<ISO8601>","task":"<short label>","class":"commit|implement|explore|ingest|review|hardest","lane":"codex-implementer|fable-implementer|claude-committer|fable-advisor|architect","exception":null,"ctx":"blind|facts|briefed|full|facts→briefed","effort":"low|medium|high|max","outcome":"success|spec-retry|escalated|failover|abandoned","attempts":1,"duration_s":90,"note":""}
 ```
 
 - `lane: "architect"` with `exception: 1–5` records work kept in-session; `duration_s` is the actual time it took, so exception-2 claims are checkable against the spawn floor.
+- `effort` is the codex reasoning effort the lane actually ran with, `null` for every non-codex lane. It exists so the next retro can answer the question the old `max` pin was set without: did a `high` run ever fail in a way more depth would have caught?
 - `ctx` is the context inheritance grade that was actually passed. A two-pass final review logs `"facts→briefed"`.
 - `outcome: "spec-retry"` means the lane failed once and got a corrected spec; put the one-line cause of the spec gap in `note`. `"escalated"` means it moved to `fable-implementer`; `"failover"` means quota/availability re-routing (name the direction in `note`).
 - `attempts` counts spec submissions to the final lane; `duration_s` is a rough wall-clock estimate, not a stopwatch reading.
@@ -189,7 +210,7 @@ Fields:
 Append with a plain shell redirect — no jq, no wrapper script:
 
 ```bash
-echo '{"ts":"2026-08-01T10:00:00+09:00","task":"add retry to sync client","class":"implement","lane":"codex-implementer","exception":null,"ctx":"facts","outcome":"success","attempts":1,"duration_s":180,"note":""}' >> ~/.claude/fable-advisor/routing.jsonl
+echo '{"ts":"2026-08-01T10:00:00+09:00","task":"add retry to sync client","class":"implement","lane":"codex-implementer","exception":null,"ctx":"facts","effort":"high","outcome":"success","attempts":1,"duration_s":180,"note":""}' >> ~/.claude/fable-advisor/routing.jsonl
 ```
 
 Logging is part of finishing the task, not optional telemetry — an unlogged delegation is invisible to the next retro. But keep it to one line per outcome; the ledger records decisions, not narration.
@@ -203,7 +224,7 @@ Count only **substantive deliverables**: a diff touching three or more files, or
 A final review logs one line, with the review-specific counters in place of `duration_s` detail:
 
 ```json
-{"ts":"…","task":"…","class":"review","lane":"fable-advisor","exception":4,"ctx":"facts→briefed","outcome":"success","attempts":1,"duration_s":120,"note":"p1=4 killed_ev=1 killed_assert=0 gap=3 gap_hit=1 verdict_changed=no"}
+{"ts":"…","task":"…","class":"review","lane":"fable-advisor","exception":4,"ctx":"facts→briefed","effort":null,"outcome":"success","attempts":1,"duration_s":120,"note":"p1=4 killed_ev=1 killed_assert=0 gap=3 gap_hit=1 verdict_changed=no"}
 ```
 
 - `p1` — findings returned by pass 1
