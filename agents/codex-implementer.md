@@ -61,7 +61,9 @@ SPEC_EOF
 2. Invoke codex non-interactively, sandboxed to the workspace, at the effort the caller named:
 
 ```bash
-# The caller's EFFORT: line — low | medium | high | max. Absent means high.
+# Substitute the value from the caller's EFFORT: line — low | medium | high | max.
+# `high` below is what to use when the caller named none; it is not a constant,
+# and shipping it on a task the caller marked `max` is a lane-level routing error.
 EFFORT=high
 
 # Portable timeout: macOS has no `timeout` unless coreutils is installed

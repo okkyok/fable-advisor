@@ -55,12 +55,14 @@ The codex lane ran pinned at `max` until 2026-08-10. The ledger never showed tha
 | Class | Effort | Why |
 |---|---|---|
 | `implement` | `high` | The default. The spec determines the outcome and the architect verifies afterwards; depth past `high` buys wall clock, not correctness |
-| `implement`, exceptional | `max` | Only when one holds: **(a)** the change spans three or more files, **(b)** the spec deliberately leaves interface design to the implementer, or **(c)** it is the second attempt after a `spec-retry` |
+| `implement`, exceptional | `max` | Only when one holds: **(a)** the change spans three or more files, **(b)** the spec leaves a *local* shape to the lane — an internal helper's signature, an error type — or **(c)** it is the retry attempt itself (`attempts` = 2) after a `spec-retry` |
 | `commit` | `low` | The spec names the change literally. Rare in this lane anyway — exception 2 keeps almost all of this class in-session |
 | `explore` | `medium` | The output is a location report, and the architect can check it against the tree cheaply |
 | `ingest` | `medium` | The failure mode is missing something. That is context coverage, and reasoning depth does not fix it |
 
 Any class not listed — `review` sent to codex for an independent-family read — takes the default `high`.
+
+(b) is not a licence to defer design. A public API shape, a schema, or a cross-module boundary stays architect work — a spec you couldn't finish is an unmade decision, not a `max` task. (b) covers only the shapes that are genuinely internal to the change being delegated.
 
 Name the value on an `EFFORT:` line next to the five-part spec; the lane runs `high` when the line is absent. **When you use `max`, name which of (a)/(b)/(c) applies**, in the prompt and in the ledger `note`, the same way a Claude-side exception gets a number. "This one looks hard" is not one of the three.
 
