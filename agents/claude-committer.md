@@ -1,6 +1,6 @@
 ---
 name: claude-committer
-description: Cheap Claude-side lane for mechanical, fully-determined edits that are too small to be worth a codex round trip but too repetitive to keep in the architect's context — bulk renames, import fixes, config value changes, applying one known pattern across many files. Use only when exception 2 (below the spawn floor) or exception 5 (Claude-only tooling) applies; routine implementation work belongs in codex-implementer. Receives the standard five-part spec and returns a structured report with verification evidence.
+description: Cheap Claude-side lane for mechanical, fully-determined edits that are too small to be worth a codex round trip but too repetitive to keep in the architect's context — bulk renames, import fixes, config value changes, applying one known pattern across many files. Use only when exception 2 (below the spawn floor) applies; routine implementation work belongs in codex-implementer. **Never route here for exception 5** — a missing tool capability is a `tool-bridge` handoff, and the implementation stays with the lane that owns it. Receives the standard five-part spec and returns a structured report with verification evidence.
 model: claude-haiku-4-5-20251001
 tools: Bash, Read, Write, Edit, Grep, Glob
 ---

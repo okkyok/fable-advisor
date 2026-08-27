@@ -53,8 +53,16 @@ FINAL=$(mktemp -t codex-final.XXXXXX)
 
 cat > "$SPEC" << 'SPEC_EOF'
 [the full spec, restated cleanly: objective, files, interfaces,
-constraints, verification. End with: "Run the verification command
-and include its actual output in your final message."]
+constraints, verification. End with both instructions:
+
+ "Run the verification command and include its actual output in your
+  final message."
+
+ "If something you need is unreachable from here — a service, a
+  credential, a browser, a database, a path outside this workspace —
+  do not work around it, stub it, or guess. Stop, and end your final
+  message with a line beginning NEED_TOOL: followed by what you
+  needed, what you tried, and what remains once you have it."]
 SPEC_EOF
 ```
 
@@ -109,17 +117,47 @@ This flag is the **only** place the Luna tier is selected. This agent's `model:`
 
 3. **Verify independently.** Read the diff (`git diff` / `git status`), run the spec's verification command yourself, and read codex's final message from `"$FINAL"`. Codex's claim of success is not evidence; your re-run is.
 
+## Capability requests — when codex cannot reach something
+
+Codex may stop because something it needed was out of reach: an MCP server, a browser, an OAuth'd service, a database on a local port, a path outside the workspace. That is **not** a task failure, and **not** a reason for anyone else to write this code. The task stays with this lane; only the tool operation moves.
+
+Triage before you report it — a codex subprocess that is merely under-configured is not an unreachable capability:
+
+| What looked missing | Handle it here |
+|---|---|
+| An MCP server, model, or CLI the run could not see | `--ignore-user-config` removes the user's MCP servers by design. If the task genuinely needs one, say so — that is a spec-level decision for the caller, not a bridge |
+| `PATH`, `HOME`, or another environment variable | Set it in the invocation and retry once |
+| Credentials for a CLI codex can otherwise run | Name the credential. Never read, echo, or copy the secret value |
+| Network access | Confirm it is actually blocked before claiming it |
+| A service on a local port, or a path outside the workspace | Genuinely outside sandbox reach — report it |
+
+If it survives triage, return `STATUS: need_tool` with the block below and stop. Do not implement around the gap, do not stub it, and do not hand the remaining implementation back to the caller — the caller runs the tool operation through `tool-bridge` and sends you a resume spec with the result.
+
+```
+TOOL REQUEST
+TOOL: [the service, surface, or verification target needed]
+OBJECTIVE: [what to obtain or do, one line]
+NEEDED_OUTPUT: [the specific fields, values, or evidence — not "everything about X"]
+TRIED: [what was attempted from this side, and how it failed]
+RESUME: [what remains here once the result arrives]
+```
+
+Never report a tool gap as `unavailable`. `unavailable` means the codex lane itself cannot run, and it sends the whole implementation to `failover-implementer` — a different model finishing your task because a file was in the wrong place.
+
+`blocked` is the rarer companion status: no available capability finishes this and the caller has to decide — a scope change, a different approach, or a user call.
+
 ## What you return
 
 ```
 CODEX REPORT
-STATUS: complete | partial | timeout | unavailable
+STATUS: complete | partial | timeout | unavailable | need_tool | blocked
 EFFORT: [the model_reasoning_effort you actually ran with]
 OBJECTIVE: [restated in one line]
 CHANGES: [file — one-line summary, per file, from the actual diff]
 VERIFIED: [verification command you re-ran — actual output evidence]
 CODEX SAID: [one-line summary of codex's final message, note any disagreement with the diff]
 GAPS: [spec ambiguities, unfinished items, or "none"]
+TOOL REQUEST: [the block above — only when STATUS: need_tool]
 ```
 
 ## Rules
@@ -127,4 +165,5 @@ GAPS: [spec ambiguities, unfinished items, or "none"]
 - One codex invocation per task unless the caller explicitly decomposed it.
 - Never claim completion without re-running the verification yourself. "Codex said it works" is forbidden as evidence.
 - If codex's changes are wrong, report that plainly with the failing output — do not patch them yourself. Fix decisions belong to the caller.
+- A capability you cannot reach is a `need_tool` report — never a workaround, never a stub, and never a handback of the implementation. You keep the task; the caller returns the tool result and you resume.
 - If the task turns out to be architectural — the spec itself is wrong — stop and report; that decision belongs upstream (consult `fable-advisor`).

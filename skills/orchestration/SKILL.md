@@ -1,6 +1,6 @@
 ---
 name: orchestration
-description: Routing doctrine for the architect-as-orchestrator pattern — how an Opus session delegates routine implementation to a cheaper cross-vendor lane, escalates high-complexity one-offs to Fable, and gets every deliverable reviewed by the Fable advisor before reporting done. Codex is the default lane; work stays Claude-side only under five named exceptions. USE WHEN delegating implementation work, classifying a task as commit/implement/explore/ingest/review/hardest, deciding whether something is worth a codex round trip or should stay in-session, choosing between codex-implementer/fable-implementer/claude-committer lanes, setting the codex reasoning effort for a task, writing a spec for a subagent, deciding whether to consult fable-advisor, handling a codex quota or rate-limit failover, managing session cost or token spend, or running any multi-task build where the session is the architect.
+description: Routing doctrine for the architect-as-orchestrator pattern — how an Opus session delegates routine implementation to a cheaper cross-vendor lane, escalates high-complexity one-offs to Fable, and gets every deliverable reviewed by the Fable advisor before reporting done. Codex is the default lane; work stays Claude-side only under five named exceptions. USE WHEN delegating implementation work, classifying a task as commit/implement/explore/ingest/review/hardest, deciding whether something is worth a codex round trip or should stay in-session, choosing between codex-implementer/fable-implementer/claude-committer lanes, setting the codex reasoning effort for a task, writing a spec for a subagent, deciding whether to consult fable-advisor, handling a codex quota or rate-limit failover, handling a lane that reports `need_tool` or hits a capability it cannot reach (MCP, browser, simulator, an OAuth'd service, or a verification its sandbox cannot run), managing session cost or token spend, or running any multi-task build where the session is the architect.
 ---
 
 # Orchestration — the architect's routing doctrine
@@ -27,6 +27,7 @@ What stays with the architect regardless of cost: decomposition, interface desig
 | High-complexity | Fable 5 | `fable-implementer` agent | The outcome depends heavily on judgment the spec can't capture: subtle concurrency, non-trivial algorithms, security-sensitive paths, hard debugging, wide-blast-radius refactors — or the routine lane has already failed the task once. One-off escalations, never the default. |
 | Floor | Claude Haiku 4.5 | `claude-committer` agent | Mechanical, fully-determined edits below the codex spawn floor but too repetitive for the architect's own context: bulk renames, import fixes, applying one known pattern across many files. Nothing that requires a decision. |
 | Failover | Claude Sonnet 5, `effort: high` pinned | `failover-implementer` agent | Not selected by task class — the sole fixed target when codex itself returns `unavailable`, `timeout`, rate-limit, or quota-exhausted. Never `claude-committer`, never `fable-implementer`. See Quota failover below. |
+| Tool bridge | Claude Haiku 4.5 (`model: sonnet` for multi-step work) | `tool-bridge` agent | Not an implementation lane. A lane hit a capability it cannot reach — MCP, browser control, the simulator, an OAuth'd connector, image inspection, or a verification its sandbox cannot run. The bridge performs the tool operation only; the lane that asked resumes. See The tool handoff below. |
 | Review | Fable 5 | `fable-advisor` agent | Not an implementation lane. Commitment boundaries and the mandatory end-of-deliverable review — see below. |
 
 Deciding rule: how much does the outcome depend on judgment the spec can't capture? Little → the default codex lane; you will verify anyway. A lot, and mistakes are costly → escalate to `fable-implementer`, or keep that piece with the architect. A routine-lane task that fails its spec once gets a corrected spec; twice, it escalates to Fable — repetition is evidence the task was misclassified.
@@ -74,13 +75,58 @@ Calibrate at 20 `implement` runs at `high`: if no spec-retry in that window has 
 2. **Below the spawn floor.** A codex round trip on this machine costs **11–25 s before the model does any work at all**, and ~6–9 k tokens for a no-op. If the architect is confident it can finish in about that time, the round trip is pure latency. Measured 2026-08-01 on codex 0.146.0: 11 s (`--ignore-user-config`, low effort), 24 s (user config, high effort), 86 s for a one-line fix end to end.
 3. **Judgment-dominated** — the `hardest` class. Subtle concurrency, security-sensitive paths, non-trivial algorithms, or a spec the routine lane has now failed twice. Re-sending a misclassified task to codex is a third failure with extra steps.
 4. **The final review gate.** `fable-advisor` reads the deliverable with fresh eyes. This never moves.
-5. **Claude-only tooling.** The work needs MCP servers, browser control, the iOS simulator, or anything else reachable from this session but not from `codex exec`.
+5. **Claude-only tooling — and it licenses the tool operation, not the implementation.** The work needs MCP servers, browser control, the iOS simulator, an OAuth'd connector, or anything else reachable from this session but not from `codex exec`. Route the tool work to `tool-bridge` and return the result to the lane that asked; the implementation never changes hands. Two things look like this exception and are not:
+   - **The harness's subagent policy.** "This session may not spawn agents" is a permission question, not a capability gap — and the bridge is itself a subagent, so treating it as exception 5 takes the whole pattern offline in one move. Confirm the permission once with the user; if spawning is genuinely unavailable, log that as its own cause, not as exception 5.
+   - **Codex sandbox reach.** A service on a local port, a path outside the workspace, a directory that is not a git repo, a live runtime config, or something `--ignore-user-config` removed. That is codex-side configuration, and the fix is in the invocation or in a bridged verification — not in the architect writing the code. See Capability triage.
 
 None of these apply? It goes to codex. "It felt faster to just do it" is exception 2 only if the architect can name the number.
+
+### Missing capability is not a change of owner
+
+> **Missing capability causes a tool handoff, not an implementation handoff.**
+>
+> **Tool access does not grant implementation ownership.**
+>
+> **The architect MUST NOT continue implementation merely because the delegated implementer cannot access a required tool.**
+
+This is the exact failure the bridge exists to prevent: codex hits a Claude-only tool, the architect runs the tool because only it can, and — already holding the result — types the rest of the diff. The capability gap was two minutes of tool work; the ownership transfer costs the whole remaining task at architect prices. The same rule binds every other lane: `tool-bridge` does not finish an implementation it unblocked, and `fable-advisor` never stops advising to start writing.
+
+### Capability triage — three questions, in order
+
+Before anything gets bridged, establish that the capability is genuinely unreachable from the implementer. **A codex subprocess that is merely under-configured is not a Claude-only tool.**
+
+1. **Can codex reach it directly?** Check MCP availability, network access, `PATH` and `HOME`, environment variables, CLI credentials, OAuth or session dependence, and sandbox scope — and check whether the lane's own `--ignore-user-config` is what removed the tool. Fix the invocation and the task never leaves the lane. If the task genuinely needs the user's codex config or MCP servers, that is a spec-level decision for the architect, not a bridge.
+2. **Can `tool-bridge` do it?** OAuth'd sessions, MCP servers, browser control, the simulator, image inspection — and any verification the codex sandbox cannot run: a local database, a dev server, a browser flow.
+3. **Only then, the architect** — and even here the architect performs the tool operation and hands the result back, under the rule above.
 
 ### Quota failover
 
 The two subscriptions have independent limits, and codex-by-default means the ChatGPT side is now the one that gets drained first. When codex returns a rate-limit, quota, `unavailable`, or `timeout` error, re-route the same spec to `failover-implementer` — a dedicated agent with `model: sonnet` and `effort: high` pinned in its own frontmatter. That pin is deliberate: this lane's effort is fixed and does not inherit, track, or get pulled up/down by whatever the architect's own session effort is set to (see Architect effort below) — it is always exactly `high`, independent of session state. It is a single fixed target: never a choice between `claude-committer` and `fable-implementer` by task class, and never Fable — Fable stays reserved for deliberate `hardest`-class escalation and the final review. **Say so in the report** — a silent failover turns a routing policy into a cost surprise. If the failover fires more than once in a session, stop and tell the user which side is exhausted; the correct fix is a routing decision, not more retries.
+
+### The tool handoff
+
+A lane that hits an unreachable capability returns `STATUS: need_tool` with a `TOOL REQUEST` block instead of failing, guessing, or handing the task back. The architect judges the request — is it real, or is it triage step 1? — spawns `tool-bridge`, and returns the result to **the same lane**.
+
+```
+codex → need_tool → tool-bridge → structured result → codex resumes
+```
+
+Two statuses, no more. `need_tool`: the lane can continue once a tool operation is done for it. `blocked`: no available capability finishes this and a decision is needed. Approval is already covered — the codex lane runs `approval_policy="never"` inside a `workspace-write` sandbox, so anything requiring approval surfaces as a refused or failed action and the existing approval rules decide it.
+
+Distinguish the handoff from failover, which looks similar and is not:
+
+| Trigger | Route |
+|---|---|
+| Codex is unavailable, timed out, rate-limited, quota-exhausted | `failover-implementer` — **implementation moves**. See Quota failover above |
+| Codex is fine but cannot reach a tool or a verification target | `tool-bridge` — **only the tool operation moves**; implementation ownership does not |
+
+A tool gap is never a reason to move a task to `failover-implementer`, to `fable-implementer`, or to the architect.
+
+**Resuming.** Do not use `codex exec resume` — it silently re-resolves the model unless `--model` is passed again, so a resumed run can come back from a different model than the one you routed to. Send a fresh invocation whose spec carries six things and nothing else: objective, current progress, the relevant diff and files, the tool result, remaining work, verification. Claude-side tool transcripts do not travel; the bridge's structured result does.
+
+**Verification by proxy.** The commoner shape is not a missing fact but a verification the sandbox cannot run — a local database, a dev server, a browser flow, a visual check on an image. The bridge runs the verification and returns the evidence; a failure goes back to the lane as a corrected spec. The architect *judging* that evidence is verification. The architect *fixing the code* because it already has the evidence in hand is the ownership transfer this section forbids.
+
+**When the bridge fails.** `STATUS: blocked` is a stopping point, not a licence to implement. Options, in order: an alternative capability (a different tool, a different verification path), a reduced scope the lane can finish without it, or escalation to the user. The architect does not quietly start writing the remainder.
 
 ### Architect effort
 
@@ -200,10 +246,11 @@ Every routing decision is a data point for tuning this doctrine — the spawn fl
 Fields:
 
 ```json
-{"ts":"<ISO8601>","task":"<short label>","class":"commit|implement|explore|ingest|review|hardest","lane":"codex-implementer|fable-implementer|claude-committer|fable-advisor|architect","exception":null,"ctx":"blind|facts|briefed|full|facts→briefed","effort":"low|medium|high|max","outcome":"success|spec-retry|escalated|failover|abandoned","attempts":1,"duration_s":90,"note":""}
+{"ts":"<ISO8601>","task":"<short label>","class":"commit|implement|explore|ingest|review|hardest","lane":"codex-implementer|fable-implementer|claude-committer|tool-bridge|fable-advisor|architect","exception":null,"ctx":"blind|facts|briefed|full|facts→briefed","effort":"low|medium|high|max","outcome":"success|spec-retry|escalated|failover|blocked|abandoned","attempts":1,"duration_s":90,"note":""}
 ```
 
 - `lane: "architect"` with `exception: 1–5` records work kept in-session; `duration_s` is the actual time it took, so exception-2 claims are checkable against the spawn floor.
+- `lane: "tool-bridge"` records a tool handoff. Put `bridge_model=haiku|sonnet` in `note`, plus `escalated=yes` when a simple-mode run had to be re-spawned in multi-step mode. `class` stays the class of the task that asked — the bridge owns no task of its own. A bridge line never carries `outcome: "escalated"`; that value means implementation moved to `fable-implementer`, which a tool handoff never does. `outcome: "blocked"` means no capability finished it and the decision went upstream. With the bridge in place an `exception: 5` line should become rare: a genuine tool gap now logs a `tool-bridge` line instead of an architect one.
 - `effort` is the codex reasoning effort the lane actually ran with, `null` for every non-codex lane. It exists so the next retro can answer the question the old `max` pin was set without: did a `high` run ever fail in a way more depth would have caught?
 - `ctx` is the context inheritance grade that was actually passed. A two-pass final review logs `"facts→briefed"`.
 - `outcome: "spec-retry"` means the lane failed once and got a corrected spec; put the one-line cause of the spec gap in `note`. `"escalated"` means it moved to `fable-implementer`; `"failover"` means quota/availability re-routing (name the direction in `note`).
@@ -216,6 +263,12 @@ echo '{"ts":"2026-08-01T10:00:00+09:00","task":"add retry to sync client","class
 ```
 
 Logging is part of finishing the task, not optional telemetry — an unlogged delegation is invisible to the next retro. But keep it to one line per outcome; the ledger records decisions, not narration.
+
+### Calibration: when to split the tool bridge
+
+`tool-bridge` is one agent at two depths — Haiku by default, `model: sonnet` for browser driving, multi-MCP investigation, OAuth'd services, and tool-error recovery. Splitting it into two lanes is a decision for data, not for taste.
+
+**Review at 10 `tool-bridge` lines.** If three or more started in simple mode and had to be re-spawned in multi-step mode, the depth is not obvious at spawn time and the two modes should become two agents. If bridge lines are still in single digits by 2026-09-30, the volume does not justify a second lane either way — and if `exception: 5` architect lines still outnumber bridge lines in that window, the problem was never the lane count: it is that the handoff is not being taken.
 
 ## Calibration: when to retire the two-pass review
 
