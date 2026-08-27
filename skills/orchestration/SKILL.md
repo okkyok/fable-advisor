@@ -76,10 +76,18 @@ Calibrate at 20 `implement` runs at `high`: if no spec-retry in that window has 
 3. **Judgment-dominated** — the `hardest` class. Subtle concurrency, security-sensitive paths, non-trivial algorithms, or a spec the routine lane has now failed twice. Re-sending a misclassified task to codex is a third failure with extra steps.
 4. **The final review gate.** `fable-advisor` reads the deliverable with fresh eyes. This never moves.
 5. **Claude-only tooling — and it licenses the tool operation, not the implementation.** The work needs MCP servers, browser control, the iOS simulator, an OAuth'd connector, or anything else reachable from this session but not from `codex exec`. Route the tool work to `tool-bridge` and return the result to the lane that asked; the implementation never changes hands. Two things look like this exception and are not:
-   - **The harness's subagent policy.** "This session may not spawn agents" is a permission question, not a capability gap — and the bridge is itself a subagent, so treating it as exception 5 takes the whole pattern offline in one move. Confirm the permission once with the user; if spawning is genuinely unavailable, log that as its own cause, not as exception 5.
+   - **The harness's subagent policy.** "This session may not spawn agents" is never evidence of a capability gap — and the bridge is itself a subagent, so treating it as exception 5 takes the whole pattern offline in one move. Standing permission from the user does not settle it either, in either direction: the only thing that settles it is an attempted spawn. See **Delegation availability is not a judgment call** below, and log it there — never as exception 5.
    - **Codex sandbox reach.** A service on a local port, a path outside the workspace, a directory that is not a git repo, a live runtime config, or something `--ignore-user-config` removed. That is codex-side configuration, and the fix is in the invocation or in a bridged verification — not in the architect writing the code. See Capability triage.
 
 None of these apply? It goes to codex. "It felt faster to just do it" is exception 2 only if the architect can name the number.
+
+### Delegation availability is not a judgment call
+
+Every exception above assumes the architect *chose* to keep the work. Being unable to delegate at all is not a choice and not an exception — it is a fault, and in this ledger it is the single largest source of in-session implementation. Two rules:
+
+**Attempt the spawn.** A sentence in the harness, a policy remembered from another session, or the absence of an explicit user request is not evidence that delegation is unavailable. The only evidence is an attempted spawn that came back a hard error. Do not infer the answer — call the tool and read what it returns.
+
+**Quote the error.** When a spawn genuinely fails, log `lane: "architect"` with `exception: "delegation-unavailable"` — a string, deliberately not a number, because it does not belong in the same population as the five exceptions and must never dilute their calibration. Put the verbatim error in `note`. An entry that cannot quote an error was an inference, and the next retro reads it as one.
 
 ### Missing capability is not a change of owner
 
@@ -250,6 +258,7 @@ Fields:
 ```
 
 - `lane: "architect"` with `exception: 1–5` records work kept in-session; `duration_s` is the actual time it took, so exception-2 claims are checkable against the spawn floor.
+- `exception: "delegation-unavailable"` is the one non-numeric value, and it is not an exception: it records that spawning a lane actually failed, with the verbatim error in `note`. Keep it out of every statistic computed over exceptions 1–5. Audit it by reading `note`: no quoted error means the architect inferred unavailability instead of testing it — the failure mode described in Delegation availability is not a judgment call.
 - `lane: "tool-bridge"` records a tool handoff. Put `bridge_model=haiku|sonnet` in `note`, plus `escalated=yes` when a simple-mode run had to be re-spawned in multi-step mode. `class` stays the class of the task that asked — the bridge owns no task of its own. A bridge line never carries `outcome: "escalated"`; that value means implementation moved to `fable-implementer`, which a tool handoff never does. `outcome: "blocked"` means no capability finished it and the decision went upstream. With the bridge in place an `exception: 5` line should become rare: a genuine tool gap now logs a `tool-bridge` line instead of an architect one.
 - `effort` is the codex reasoning effort the lane actually ran with, `null` for every non-codex lane. It exists so the next retro can answer the question the old `max` pin was set without: did a `high` run ever fail in a way more depth would have caught?
 - `ctx` is the context inheritance grade that was actually passed. A two-pass final review logs `"facts→briefed"`.
