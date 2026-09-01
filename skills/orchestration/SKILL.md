@@ -239,6 +239,12 @@ Files structurally inside the blast radius that no agent has said one word about
 
 `fable-advisor` has `Read, Grep, Glob` and no Bash or MCP — **the architect computes the gap and passes the paths**; the advisor reads those files itself. An empty gap is a result worth stating in pass 1, not a step to skip.
 
+### When the advisor lane is unavailable
+
+A `fable-advisor` spawn that dies on an API error — a safeguard rejection, a quota exhaustion, a rate limit — is a lane failure, not a completed review. Retry once. If it fails the same way, re-spawn the same agent with an explicit `model: opus` override and run the identical pass-1 prompt: the review still happens, it just loses cross-model independence, and that loss belongs in the report. Log `lane: "fable-advisor"`, `outcome: "failover"`, with the verbatim error in `note`.
+
+The option that does not exist is reporting done with no review. A gate that could not be spawned is still a gate. If a deliverable ever ships without one, the ledger entry is `outcome: "blocked"` and it reads as an incident, not as a completed task.
+
 ## Verification
 
 Reports are claims, not evidence. Before accepting any lane's work: read the diff, and re-run the verification command (or spot-check its quoted output against the working tree). "Should work", "tests should pass", or a report with no command output means the task is not done. A lane that reports a spec gap gets a corrected spec, not a "use your judgment".
