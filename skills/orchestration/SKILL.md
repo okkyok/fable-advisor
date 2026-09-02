@@ -1,15 +1,15 @@
 ---
 name: orchestration
-description: Routing doctrine for the architect-as-orchestrator pattern — how an Opus session delegates routine implementation to a cheaper cross-vendor lane, escalates high-complexity one-offs to Fable, and gets every deliverable reviewed by the Fable advisor before reporting done. Codex is the default lane; work stays Claude-side only under five named exceptions. USE WHEN delegating implementation work, classifying a task as commit/implement/explore/ingest/review/hardest, deciding whether something is worth a codex round trip or should stay in-session, choosing between codex-implementer/fable-implementer/claude-committer lanes, setting the codex reasoning effort for a task, writing a spec for a subagent, deciding whether to consult fable-advisor, handling a codex quota or rate-limit failover, handling a lane that reports `need_tool` or hits a capability it cannot reach (MCP, browser, simulator, an OAuth'd service, or a verification its sandbox cannot run), managing session cost or token spend, or running any multi-task build where the session is the architect.
+description: Routing doctrine for the architect-as-orchestrator pattern — how an Opus session delegates routine implementation to a cheaper cross-vendor lane, escalates high-complexity one-offs to Fable, and gates every deliverable with architect verification plus a fresh-context Codex review, escalating to the Fable advisor only on named triggers. Codex is the default lane; work stays Claude-side only under five named exceptions. USE WHEN delegating implementation work, classifying a task as commit/implement/explore/ingest/review/hardest, deciding whether something is worth a codex round trip or should stay in-session, choosing between codex-implementer/fable-implementer/claude-committer lanes, setting the codex reasoning effort for a task, writing a spec for a subagent, deciding whether to consult fable-advisor, handling a codex quota or rate-limit failover, handling a lane that reports `need_tool` or hits a capability it cannot reach (MCP, browser, simulator, an OAuth'd service, or a verification its sandbox cannot run), managing session cost or token spend, or running any multi-task build where the session is the architect.
 ---
 
 # Orchestration — the architect's routing doctrine
 
-The session is the architect: it owns requirements, architecture, decomposition, specs, routing, and verification. It should almost never type implementation code. Every implementation task gets routed to the cheapest lane that is adequate for it — escalation to Fable is deliberate, per task, never a fixed binding — and every finished deliverable gets a Fable review before the architect reports done.
+The session is the architect: it owns requirements, architecture, decomposition, specs, routing, and verification. It should almost never type implementation code. Every implementation task gets routed to the cheapest lane that is adequate for it — escalation to Fable is deliberate, per task, never a fixed binding — and every finished deliverable passes a Tier 1 gate: the architect verifies it and `codex-implementer` reviews it in a fresh context. Tier 2 sends it to Fable only on named triggers.
 
 ## Cost discipline — the prime directive
 
-The economics of this pattern: Opus orchestrates (judgment-heavy, volume-light), GPT-5.6 Luna does the routine typing (volume-heavy, cheap, cross-vendor), and Fable — the most expensive model available — is spent only where it changes outcomes: the hardest one-off implementations and the final review. Three rules follow.
+The economics of this pattern: Opus orchestrates (judgment-heavy, volume-light), GPT-5.6 Luna does the routine typing (volume-heavy, cheap, cross-vendor), and Fable — the most expensive model available — is spent only where it changes outcomes: the hardest one-off implementations and a triggered final review. Three rules follow.
 
 **Emit judgment, not volume.** The architect's output is decomposition, specs, routing decisions, verdicts on diffs, and short reports. It does not type implementation code, test bodies, boilerplate, or config files. A code block longer than an interface signature or a few illustrative lines is a spec that hasn't been delegated yet — stop and delegate it. Fixing a lane's bug by hand is the same failure in disguise: send a corrected spec back to the lane instead.
 
@@ -28,11 +28,11 @@ What stays with the architect regardless of cost: decomposition, interface desig
 | Floor | Claude Haiku 4.5 | `claude-committer` agent | Mechanical, fully-determined edits below the codex spawn floor but too repetitive for the architect's own context: bulk renames, import fixes, applying one known pattern across many files. Nothing that requires a decision. |
 | Failover | Claude Sonnet 5, `effort: high` pinned | `failover-implementer` agent | Not selected by task class — the sole fixed target when codex itself returns `unavailable`, `timeout`, rate-limit, or quota-exhausted. Never `claude-committer`, never `fable-implementer`. See Quota failover below. |
 | Tool bridge | Claude Haiku 4.5 (`model: sonnet` for multi-step work) | `tool-bridge` agent | Not an implementation lane. A lane hit a capability it cannot reach — MCP, browser control, the simulator, an OAuth'd connector, image inspection, or a verification its sandbox cannot run. The bridge performs the tool operation only; the lane that asked resumes. See The tool handoff below. |
-| Review | Fable 5 | `fable-advisor` agent | Not an implementation lane. Commitment boundaries and the mandatory end-of-deliverable review — see below. |
+| Review | GPT-5.6 Luna (Tier 1); Fable 5 (Tier 2) | `codex-implementer` (Tier 1) or `fable-advisor` (Tier 2) | Not an implementation lane. Tier 1 is the default gate for every deliverable; Tier 2 is the triggered Fable review — see below. |
 
 Deciding rule: how much does the outcome depend on judgment the spec can't capture? Little → the default codex lane; you will verify anyway. A lot, and mistakes are costly → escalate to `fable-implementer`, or keep that piece with the architect. A routine-lane task that fails its spec once gets a corrected spec; twice, it escalates to Fable — repetition is evidence the task was misclassified.
 
-The codex lane is also the cross-vendor half of the pattern: its output comes from a non-Anthropic family, so the Claude architect's verification and the Fable review are genuine cross-vendor checks, not same-family self-review.
+The codex lane is cross-vendor from the Claude architect. In Tier 1, the codex reviewer shares a model family with the codex implementer that produced the diff, so it is a fresh-context check, not a cross-family one. The architect's own diff read and verification are the cross-vendor element at this tier. Tier 2 adds Fable only when a named trigger fires.
 
 If the codex lane returns `unavailable` or `timeout`, re-route the same spec to `failover-implementer` — see Quota failover below for why this is a fixed, pinned-effort target rather than the class-dependent Fable escalation — and say so explicitly in your report; never quietly absorb the substitution or the cost change.
 
@@ -46,7 +46,7 @@ This session runs a Claude subscription and a ChatGPT subscription side by side,
 | `implement` | Code that a complete spec fully determines | codex (`codex-implementer`) |
 | `explore` | Open-ended search: where does X live, how does Y work | codex — unless exception 1 or 2 |
 | `ingest` | Reading long material: logs, dumps, docs, transcripts | codex. Never route here for context economy reasons alone — high token volume is exactly what the ChatGPT side is for |
-| `review` | Adversarial checking of a diff or design | codex first (independent family), then `fable-advisor` as the final gate |
+| `review` | Adversarial checking of a diff or design | Tier 1: fresh-context `codex-implementer` review by default; Tier 2: `fable-advisor` only on `deadlock`, `irreversible`, or `user-request` |
 | `hardest` | Judgment-dominated work, or a task the routine lane already failed twice | `fable-implementer` — the one class that is Claude-side by default |
 
 ### Codex lane effort
@@ -61,7 +61,7 @@ The codex lane ran pinned at `max` until 2026-08-10. The ledger never showed tha
 | `explore` | `medium` | The output is a location report, and the architect can check it against the tree cheaply |
 | `ingest` | `medium` | The failure mode is missing something. That is context coverage, and reasoning depth does not fix it |
 
-Any class not listed — `review` sent to codex for an independent-family read — takes the default `high`.
+Any class not listed — a Tier 1 `review` sent to `codex-implementer` for a fresh-context read — takes the default `high`.
 
 (b) is not a licence to defer design. A public API shape, a schema, or a cross-module boundary stays architect work — a spec you couldn't finish is an unmade decision, not a `max` task. (b) covers only the shapes that are genuinely internal to the change being delegated.
 
@@ -74,7 +74,7 @@ Calibrate at 20 `implement` runs at `high`: if no spec-retry in that window has 
 1. **Context-bound.** The task depends on conversation state — decisions made, paths already ruled out, "the thing we just changed". Writing a self-contained five-part spec would cost more than doing the work. Delegating here doesn't save money, it launders context loss into a bad diff.
 2. **Below the spawn floor.** A codex round trip on this machine costs **11–25 s before the model does any work at all**, and ~6–9 k tokens for a no-op. If the architect is confident it can finish in about that time, the round trip is pure latency. Measured 2026-08-01 on codex 0.146.0: 11 s (`--ignore-user-config`, low effort), 24 s (user config, high effort), 86 s for a one-line fix end to end.
 3. **Judgment-dominated** — the `hardest` class. Subtle concurrency, security-sensitive paths, non-trivial algorithms, or a spec the routine lane has now failed twice. Re-sending a misclassified task to codex is a third failure with extra steps.
-4. **The final review gate.** `fable-advisor` reads the deliverable with fresh eyes. This never moves.
+4. **The Tier 2 review gate.** `fable-advisor` reads the deliverable with fresh eyes when a named trigger fires. Tier 1 stays with `codex-implementer`; this exception is the Fable escalation.
 5. **Claude-only tooling — and it licenses the tool operation, not the implementation.** The work needs MCP servers, browser control, the iOS simulator, an OAuth'd connector, or anything else reachable from this session but not from `codex exec`. Route the tool work to `tool-bridge` and return the result to the lane that asked; the implementation never changes hands. Two things look like this exception and are not:
    - **The harness's subagent policy.** "This session may not spawn agents" is never evidence of a capability gap — and the bridge is itself a subagent, so treating it as exception 5 takes the whole pattern offline in one move. Standing permission from the user does not settle it either, in either direction: the only thing that settles it is an attempted spawn. See **Delegation availability is not a judgment call** below, and log it there — never as exception 5.
    - **Codex sandbox reach.** A service on a local port, a path outside the workspace, a directory that is not a git repo, a live runtime config, or something `--ignore-user-config` removed. That is codex-side configuration, and the fix is in the invocation or in a bridged verification — not in the architect writing the code. See Capability triage.
@@ -109,7 +109,7 @@ Before anything gets bridged, establish that the capability is genuinely unreach
 
 ### Quota failover
 
-The two subscriptions have independent limits, and codex-by-default means the ChatGPT side is now the one that gets drained first. When codex returns a rate-limit, quota, `unavailable`, or `timeout` error, re-route the same spec to `failover-implementer` — a dedicated agent with `model: sonnet` and `effort: high` pinned in its own frontmatter. That pin is deliberate: this lane's effort is fixed and does not inherit, track, or get pulled up/down by whatever the architect's own session effort is set to (see Architect effort below) — it is always exactly `high`, independent of session state. It is a single fixed target: never a choice between `claude-committer` and `fable-implementer` by task class, and never Fable — Fable stays reserved for deliberate `hardest`-class escalation and the final review. **Say so in the report** — a silent failover turns a routing policy into a cost surprise. If the failover fires more than once in a session, stop and tell the user which side is exhausted; the correct fix is a routing decision, not more retries.
+The two subscriptions have independent limits, and codex-by-default means the ChatGPT side is now the one that gets drained first. When codex returns a rate-limit, quota, `unavailable`, or `timeout` error, re-route the same spec to `failover-implementer` — a dedicated agent with `model: sonnet` and `effort: high` pinned in its own frontmatter. That pin is deliberate: this lane's effort is fixed and does not inherit, track, or get pulled up/down by whatever the architect's own session effort is set to (see Architect effort below) — it is always exactly `high`, independent of session state. It is a single fixed target: never a choice between `claude-committer` and `fable-implementer` by task class, and never Fable — Fable stays reserved for deliberate `hardest`-class escalation and a triggered final review. **Say so in the report** — a silent failover turns a routing policy into a cost surprise. If the failover fires more than once in a session, stop and tell the user which side is exhausted; the correct fix is a routing decision, not more retries.
 
 ### The tool handoff
 
@@ -173,7 +173,7 @@ Defaults:
 
 - `codex-implementer`, `fable-implementer`, `claude-committer` → `facts`. The five-part spec is already a facts-grade payload; keep it that way.
 - `fable-advisor` at a commitment boundary → `facts`
-- `fable-advisor` at final review → `facts` on the first pass, `briefed` only on the reconcile pass (see below)
+- `fable-advisor` at the Tier 2 final review → `facts` on the first pass, `briefed` only on the reconcile pass (see below)
 - Work kept in-session under exception 1 → `full` by definition; that is what exception 1 *means*
 
 Record the grade in the ledger (`ctx`). Never raise the grade mid-task without first putting the lower-grade output on the record.
@@ -197,19 +197,30 @@ A lane that failed once gets a corrected spec. The previous attempt is `briefed`
 
 Independent specs (no shared files, no ordering dependency) launch as parallel agents in a single message. Sequential chains and single-file surgery stay serial. For high-stakes work, run `codex-implementer` and `fable-implementer` on the same spec and let the architect pick the stronger diff — two model families, one judged result.
 
-## Commitment boundaries and the final review
+## Commitment boundaries and the review tiers
 
 Consult `fable-advisor` (read-only, verdict in under 300 words) at the moments that decide whether the next hour is wasted:
 
 - Before committing to an architecture, data migration, API shape, or refactor strategy
 - Whenever the same problem has resisted two distinct attempts
-- **Always, once, at the end of a deliverable** — the advisor reads the accumulated changes with fresh eyes, against the stated goal rather than the conversation, and returns ship / fix-first / rethink. The architect does not report done before this review.
 
-Pass it the decision (or, for final review, the diff and the stated goal), the constraints, and the options considered. Act on the verdict or surface the disagreement — never silently ignore it.
+The end-of-deliverable gate has two tiers:
 
-One honest caveat: when the deliverable came from `fable-implementer`, the reviewer and the implementer are the same model. The final review is still worth it — it reads the diff in a clean context, against the goal rather than the conversation — but it is a fresh-eyes check there, not an independent-model check. Cross-vendor independence comes from the codex lane.
+- **Tier 1 — the default gate, every deliverable.** The architect reads the diff and re-runs the verification command, then sends a fresh-context `review`-class task to `codex-implementer`. The codex reviewer shares a model family with the codex implementer that produced the diff, so this is a fresh-context check, not a cross-family one. The architect's own verification is the cross-vendor element at this tier.
+- **Tier 2 — `fable-advisor`, only on one of three triggers.**
+  - `deadlock` — the same problem has resisted two distinct attempts, a Tier 1 review finding has survived two fix cycles, or a finding has reappeared after being fixed.
+  - `irreversible` — a data migration, a public API or schema shape, an auth / billing / permission boundary, or a destructive operation. Not every commitment boundary; only what cannot be undone.
+  - `user-request` — the user asked for it.
 
-### The final review runs in two passes
+These are deliberately the same three trigger names `sol-advisor`'s Challenger uses for calling Claude from the Codex side. The symmetry is the point: codex is the house; Claude is outside counsel.
+
+Never use Tier 2 for a routine feature, a deliverable whose Tier 1 review passed, or one more opinion for comfort. The commitment-boundary consults above stay in place; they already fire on a condition rather than on every deliverable.
+
+Pass it the decision (or, for a Tier 2 review, the diff and the stated goal), the constraints, and the options considered. Act on the verdict or surface the disagreement — never silently ignore it.
+
+One honest caveat about Tier 2: when the deliverable came from `fable-implementer`, the reviewer and the implementer are the same model. The review is still worth it — it reads the diff in a clean context, against the goal rather than the conversation — but it is a fresh-eyes check there, not an independent-model one. When the deliverable came from the codex lane, Tier 2 is genuinely cross-vendor.
+
+### The Tier 2 final review runs in two passes
 
 Independence comes from ordering, not isolation. The reviewer can have both a clean read *and* the implementer's claims — as long as the clean read is on the record first.
 
@@ -243,7 +254,7 @@ Files structurally inside the blast radius that no agent has said one word about
 
 A `fable-advisor` spawn that dies on an API error — a safeguard rejection, a quota exhaustion, a rate limit — is a lane failure, not a completed review. Retry once. If it fails the same way, re-spawn the same agent with an explicit `model: opus` override and run the identical pass-1 prompt: the review still happens, it just loses cross-model independence, and that loss belongs in the report. Log `lane: "fable-advisor"`, `outcome: "failover"`, with the verbatim error in `note`.
 
-The option that does not exist is reporting done with no review. A gate that could not be spawned is still a gate. If a deliverable ever ships without one, the ledger entry is `outcome: "blocked"` and it reads as an incident, not as a completed task.
+The option that does not exist is reporting done after a Tier 2 trigger fires but without its review. A gate that could not be spawned is still a gate. If a deliverable with a fired Tier 2 trigger ever ships without that review, the ledger entry is `outcome: "blocked"` and it reads as an incident, not as a completed task. A deliverable with no Tier 2 trigger is not shipping without a gate — it shipped through Tier 1.
 
 ## Verification
 
@@ -263,11 +274,12 @@ Fields:
 {"ts":"<ISO8601>","task":"<short label>","class":"commit|implement|explore|ingest|review|hardest","lane":"codex-implementer|fable-implementer|claude-committer|tool-bridge|fable-advisor|architect","exception":null,"ctx":"blind|facts|briefed|full|facts→briefed","effort":"low|medium|high|max","outcome":"success|spec-retry|escalated|failover|blocked|abandoned","attempts":1,"duration_s":90,"note":""}
 ```
 
+- A `review`-class Tier 1 line uses `lane: "codex-implementer"`; a Tier 2 final-review line uses `lane: "fable-advisor"` with `exception: 4`.
 - `lane: "architect"` with `exception: 1–5` records work kept in-session; `duration_s` is the actual time it took, so exception-2 claims are checkable against the spawn floor.
 - `exception: "delegation-unavailable"` is the one non-numeric value, and it is not an exception: it records that spawning a lane actually failed, with the verbatim error in `note`. Keep it out of every statistic computed over exceptions 1–5. Audit it by reading `note`: no quoted error means the architect inferred unavailability instead of testing it — the failure mode described in Delegation availability is not a judgment call.
 - `lane: "tool-bridge"` records a tool handoff. Put `bridge_model=haiku|sonnet` in `note`, plus `escalated=yes` when a simple-mode run had to be re-spawned in multi-step mode. `class` stays the class of the task that asked — the bridge owns no task of its own. A bridge line never carries `outcome: "escalated"`; that value means implementation moved to `fable-implementer`, which a tool handoff never does. `outcome: "blocked"` means no capability finished it and the decision went upstream. With the bridge in place an `exception: 5` line should become rare: a genuine tool gap now logs a `tool-bridge` line instead of an architect one.
 - `effort` is the codex reasoning effort the lane actually ran with, `null` for every non-codex lane. It exists so the next retro can answer the question the old `max` pin was set without: did a `high` run ever fail in a way more depth would have caught?
-- `ctx` is the context inheritance grade that was actually passed. A two-pass final review logs `"facts→briefed"`.
+- `ctx` is the context inheritance grade that was actually passed. A Tier 2 two-pass final review logs `"facts→briefed"`.
 - `outcome: "spec-retry"` means the lane failed once and got a corrected spec; put the one-line cause of the spec gap in `note`. `"escalated"` means it moved to `fable-implementer`; `"failover"` means quota/availability re-routing (name the direction in `note`).
 - `attempts` counts spec submissions to the final lane; `duration_s` is a rough wall-clock estimate, not a stopwatch reading.
 
@@ -289,9 +301,9 @@ Logging is part of finishing the task, not optional telemetry — an unlogged de
 
 The two-pass review and the silence gap earn their cost only if anchoring actually happens. Decide that from the ledger, not from impression — and decide it on a date, or the machinery outlives its justification by default.
 
-Count only **substantive deliverables**: a diff touching three or more files, or any non-trivial logic change. A one-line fix can never produce an anchoring event and must not dilute the sample.
+Count only **substantive Tier 2 reviews**: a Tier 2 review of a diff touching three or more files, or any non-trivial logic change. A one-line fix can never produce an anchoring event and must not dilute the sample.
 
-A final review logs one line, with the review-specific counters in place of `duration_s` detail:
+A Tier 2 final review logs one line, with the review-specific counters in place of `duration_s` detail:
 
 ```json
 {"ts":"…","task":"…","class":"review","lane":"fable-advisor","exception":4,"ctx":"facts→briefed","effort":null,"outcome":"success","attempts":1,"duration_s":120,"note":"p1=4 killed_ev=1 killed_assert=0 gap=3 gap_hit=1 verdict_changed=no"}
@@ -302,8 +314,9 @@ A final review logs one line, with the review-specific counters in place of `dur
 - `killed_assert` — pass-1 findings the advisor tried to withdraw on the implementer's word alone. **This is the anchoring event.** Any non-zero value is the mechanism catching exactly what it exists for
 - `gap` / `gap_hit` — silence gap size, and how many real defects were found inside it
 - `verdict_changed` — whether pass 2 moved ship / fix-first / rethink
+- The `p1=… killed_ev=… killed_assert=… gap=… gap_hit=… verdict_changed=…` note format applies to Tier 2 `fable-advisor` lines; Tier 1 `codex-implementer` review lines use ordinary outcome notes.
 
-**Review at 10 substantive deliverables or 2026-09-30, whichever comes first.**
+**Review at 10 substantive Tier 2 reviews or 2026-09-30, whichever comes first.** Tier 2 triggers are deliberately rare, so this sample may accrue more slowly; the date remains the backstop.
 
 Two-pass review — read the two kill columns together, not separately:
 
@@ -315,7 +328,7 @@ Two-pass review — read the two kill columns together, not separately:
 
 Silence gap — an empty gap and a noisy gap both argue for retirement, but they have different fixes:
 
-| Observation over 10 | Read as | Action |
+| Observation over 10 Tier 2 reviews | Read as | Action |
 |---|---|---|
 | Gap nearly always empty | Implementers already cover their own blast radius | Retire the computation; the reports are doing the job |
 | Gap large, `gap_hit` stays 0 | The impact query is producing noise, not attention | Tighten the query first; retire only if a tighter query still finds nothing |
