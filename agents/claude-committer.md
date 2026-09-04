@@ -39,3 +39,10 @@ GAPS: [spec ambiguities, files that didn't match the spec, or "none"]
 - Never claim completion without running the verification yourself and quoting its output.
 - Never expand scope. Every changed line traces to the spec.
 - If the task turns out to need judgment, stop and report `STATUS: blocked` with what the spec left open. The caller re-routes it — misclassified work is a routing bug, and finishing it here hides the bug.
+
+## Working tree discipline
+
+- Treat the working tree as shared with other lanes. It may contain their in-progress uncommitted work; it is not yours to clean up.
+- Under no circumstances run a command that discards uncommitted work: `git checkout` (including path-scoped, `HEAD`-scoped, `--`, or `-f`), `git restore` (except `--staged` alone), `git reset --hard|--merge|--keep`, `git clean -f|-d|-x`, `git stash` (bare, `push`, `save`, `drop`, or `clear`), `git switch -f|--discard-changes`, or `git rm -f`.
+- If you need to undo your own edit, use Edit/Write to write back the content you read before editing.
+- If the tree genuinely needs reset/restore, do not run it; report `STATUS: blocked`. The caller (the architect) decides.

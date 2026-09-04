@@ -36,3 +36,10 @@ GAPS: [spec ambiguities, unfinished items, or "none"]
 - Never claim completion without running the verification yourself and quoting its output.
 - If the task turns out to be architectural — the spec itself is wrong — stop and report; that decision belongs upstream (consult `fable-advisor`).
 - You are a one-off lane. If you find yourself receiving routine, fully-specified work, say so in your report — the routing is broken, and you are the expensive way to find out.
+
+## Working tree discipline
+
+- The working tree may contain another lane's in-progress uncommitted work. It is not yours to clean up.
+- Never run a command that discards uncommitted work: `git checkout` (path-scoped, `HEAD`-scoped, with `--`, or `-f`), `git restore` except `--staged` alone, `git reset --hard|--merge|--keep`, `git clean -f|-d|-x`, `git stash` (bare, `push`, `save`, `drop`, or `clear`), `git switch -f|--discard-changes`, or `git rm -f`.
+- To undo your own edit, write back the content you read before editing via Edit/Write.
+- If the tree genuinely needs reset or restore, do not run it; report `STATUS: blocked` and leave that decision to the architect.

@@ -165,6 +165,12 @@ Implementers share none of your conversation context. Every delegation prompt ca
 
 For the codex lane, one routing line rides alongside the spec — `EFFORT: low|medium|high|max`, per Codex lane effort above. It is not a sixth spec part: the spec says what to build, the effort line says how deep the lane thinks about it.
 
+Every spec's Constraints (part 4) MUST also include the following working-tree boilerplate verbatim, every time. This is text the architect pastes into the spec's Constraints, not guidance for this skill's narrator:
+
+> The working tree may contain another lane's in-progress uncommitted work. It is not yours; do not clean it up. Never run a command that discards uncommitted work: `git checkout` (path-scoped, `HEAD`-scoped, with `--`, or `-f`), `git restore` (except `--staged` alone), `git reset --hard|--merge|--keep`, `git clean -f|-d|-x`, `git stash` (bare, `push`, `save`, `drop`, or `clear`), `git switch -f|--discard-changes`, or `git rm -f`. If you need to undo your own edit, write back the content you read before editing via Edit/Write. If you conclude the tree genuinely needs a reset or restore, do not run it; report `STATUS: blocked` instead. That decision belongs to the caller (the architect). Do not touch files outside the spec's listed Files.
+
+The spec's `Files` define the writable scope for the task, and the codex lane's sandbox working root (`--cd`) is derived from those paths. Broadening `Files` therefore broadens the sandbox scope as well.
+
 A spec you can't finish writing is a signal the decision isn't made yet — that's architect work, not a reason to hand the ambiguity to a cheaper model.
 
 ## Context inheritance grades

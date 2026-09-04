@@ -89,6 +89,8 @@ SPEC_EOF
 
 2. Invoke codex non-interactively, sandboxed to the workspace, at the effort the caller named:
 
+Before this invocation, derive `WORKDIR` from every path in the spec's `Files`: use the toplevel of the innermost git repository containing all of them; if the files do not fit one repository, use their innermost common directory. Pass that value as `--cd "$WORKDIR"`; never derive it from the caller's current directory, and keep `--skip-git-repo-check` because the derived root may not be a git repository. Never pass `$HOME` itself: if the Files-derived root equals `$HOME`, do not run the command; report `STATUS: blocked` and ask the architect to narrow the spec's Files. PreToolUse hooks cannot see inside `codex exec`, so the sandbox scope is the only mechanical control available; on 2026-09-04, a codex lane started from the home directory entered the unrelated real project `/Users/okky/dev/cocomil/kyomi/posting-tracker` and deleted untracked files that another task was restoring.
+
 ```bash
 # Substitute the value from the caller's EFFORT: line — low | medium | high | max.
 # `high` below is what to use when the caller named none; it is not a constant,
@@ -115,7 +117,7 @@ run env -u OPENAI_API_KEY codex exec \
   --sandbox workspace-write \
   --add-dir "$HOME/.codex/sol-advisor" \
   --skip-git-repo-check \
-  --cd "$(pwd)" \
+  --cd "$WORKDIR" \
   --output-last-message "$FINAL" \
   - < "$SPEC"
 ```
@@ -133,7 +135,7 @@ Flag discipline (non-negotiable):
 | `--ignore-user-config` | Ignores `~/.codex/config.toml`, so this lane's model and effort come from the flags above and nothing else — and the user's MCP servers don't get spawned for a headless run. Measured on this machine: 24 s → 11 s on a no-op task. |
 | `--add-dir "$HOME/.codex/sol-advisor"` | Codex's own `~/.codex/AGENTS.md` doctrine requires declaring routing to `sol-advisor-gate.py` before any edit, which writes `gate-state.json`/`gate-state.lock`/`routing.jsonl` under this directory. It sits outside the `--cd` working tree, so `--sandbox workspace-write` denies it unless explicitly added — every headless run was self-blocking on this write before the flag existed. Grants write to exactly this one directory, nothing broader. |
 | `env -u OPENAI_API_KEY` | Forces ChatGPT subscription auth. If a stray API key is exported, codex bills it per token instead of drawing on the subscription — the whole point of this lane. |
-| `--skip-git-repo-check` + `--cd "$(pwd)"` | Deterministic working root; works outside git repos. |
+| `--skip-git-repo-check` + `--cd "$WORKDIR"` | Files-derived working root; works outside git repos. |
 | `- < spec file` | Prompt via stdin. No quoting hazards, no truncated specs. |
 | `run` wrapper | 570 s wall clock when `timeout`/`gtimeout` exists (macOS needs `brew install coreutils`); runs uncapped otherwise. `-k 10` follows the SIGTERM with a SIGKILL, for a codex that ignores the first. On timeout, report `STATUS: timeout` with whatever landed. A shell function, not `${T:+…}` interpolation, because zsh does not word-split unquoted expansions. The number must stay strictly below the enclosing Bash call's `timeout:` — see above. |
 
@@ -199,3 +201,10 @@ RESUME: [required when STATUS is partial or timeout — the contents of
 - A capability you cannot reach is a `need_tool` report — never a workaround, never a stub, and never a handback of the implementation. You keep the task; the caller returns the tool result and you resume.
 - A `timeout` is not a failed handoff. Read `.codex-handoff.md`, report `STATUS: timeout` with the `RESUME` block, and leave the working tree exactly as codex left it — the caller resumes this lane with a fresh invocation, and an untouched tree is what makes that possible.
 - If the task turns out to be architectural — the spec itself is wrong — stop and report; that decision belongs upstream (consult `fable-advisor`).
+
+## Working tree discipline
+
+- The working tree may contain another lane's in-progress uncommitted work. It is not yours to clean up.
+- This lane writes code inside a codex subprocess, outside the mechanical PreToolUse hook's reach; this text convention is your sole defense against destructive git operations.
+- Never run `git checkout` (including path-scoped, `HEAD`-scoped, `--`, or `-f`), `git restore` except `--staged` alone, `git reset --hard|--merge|--keep`, `git clean -f|-d|-x`, `git stash` (bare, `push`, `save`, `drop`, or `clear`), `git switch -f|--discard-changes`, or `git rm -f`.
+- To undo your own edit, write back the content you read before editing via Edit/Write. If reset or restore is genuinely needed, do not run it; report `STATUS: blocked` for the architect.
