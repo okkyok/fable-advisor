@@ -1,6 +1,6 @@
 ---
 name: orchestration
-description: Routing doctrine for the architect-as-orchestrator pattern — how an Opus session delegates routine implementation to a cheaper cross-vendor lane, escalates high-complexity one-offs to Fable, and gets every deliverable reviewed by the Fable advisor before reporting done. Codex is the default lane; work stays Claude-side only under five named exceptions. USE WHEN delegating implementation work, classifying a task as commit/implement/explore/ingest/review/hardest, deciding whether something is worth a codex round trip or should stay in-session, choosing between codex-implementer/fable-implementer/claude-committer lanes, setting the codex reasoning effort for a task, writing a spec for a subagent, deciding whether to consult fable-advisor, handling a codex quota or rate-limit failover, handling a lane that reports `need_tool` or hits a capability it cannot reach (MCP, browser, simulator, an OAuth'd service, or a verification its sandbox cannot run), managing session cost or token spend, or running any multi-task build where the session is the architect.
+description: Routing doctrine for the architect-as-orchestrator pattern — how an Opus session delegates routine implementation to a cheaper cross-vendor lane, escalates high-complexity one-offs to Fable, and gets every deliverable reviewed by the Fable advisor before reporting done. Codex is the default lane; work stays Claude-side only under five named exceptions. USE WHEN delegating implementation work, classifying a task as commit/implement/explore/ingest/review/hardest, deciding whether something is worth a codex round trip or should stay in-session, choosing between codex-implementer/fable-implementer/claude-committer lanes, setting the codex reasoning effort for a task, writing a spec for a subagent, deciding whether to consult fable-advisor, handling a codex quota or rate-limit failover, resuming a codex lane that ran out of wall clock, handling a lane that reports `need_tool` or hits a capability it cannot reach (MCP, browser, simulator, an OAuth'd service, or a verification its sandbox cannot run), managing session cost or token spend, or running any multi-task build where the session is the architect.
 ---
 
 # Orchestration — the architect's routing doctrine
@@ -26,7 +26,7 @@ What stays with the architect regardless of cost: decomposition, interface desig
 | Routine | GPT-5.6 Luna (reasoning effort by task class — see Codex lane effort) | `codex-implementer` agent | The spec fully determines the outcome: boilerplate, wiring, CRUD, mechanical edits, straightforward features. **Default lane.** Requires the codex CLI. |
 | High-complexity | Fable 5 | `fable-implementer` agent | The outcome depends heavily on judgment the spec can't capture: subtle concurrency, non-trivial algorithms, security-sensitive paths, hard debugging, wide-blast-radius refactors — or the routine lane has already failed the task once. One-off escalations, never the default. |
 | Floor | Claude Haiku 4.5 | `claude-committer` agent | Mechanical, fully-determined edits below the codex spawn floor but too repetitive for the architect's own context: bulk renames, import fixes, applying one known pattern across many files. Nothing that requires a decision. |
-| Failover | Claude Sonnet 5, `effort: high` pinned | `failover-implementer` agent | Not selected by task class — the sole fixed target when codex itself returns `unavailable`, `timeout`, rate-limit, or quota-exhausted. Never `claude-committer`, never `fable-implementer`. See Quota failover below. |
+| Failover | Claude Sonnet 5, `effort: high` pinned | `failover-implementer` agent | Not selected by task class — the sole fixed target when codex itself returns `unavailable`, rate-limit, or quota-exhausted. A `timeout` does not come here — it resumes in the codex lane, see The wall clock. Never `claude-committer`, never `fable-implementer`. See Quota failover below. |
 | Tool bridge | Claude Haiku 4.5 (`model: sonnet` for multi-step work) | `tool-bridge` agent | Not an implementation lane. A lane hit a capability it cannot reach — MCP, browser control, the simulator, an OAuth'd connector, image inspection, or a verification its sandbox cannot run. The bridge performs the tool operation only; the lane that asked resumes. See The tool handoff below. |
 | Review | Fable 5 | `fable-advisor` agent | Not an implementation lane. Commitment boundaries and the mandatory end-of-deliverable review — see below. |
 
@@ -34,7 +34,7 @@ Deciding rule: how much does the outcome depend on judgment the spec can't captu
 
 The codex lane is also the cross-vendor half of the pattern: its output comes from a non-Anthropic family, so the Claude architect's verification and the Fable review are genuine cross-vendor checks, not same-family self-review.
 
-If the codex lane returns `unavailable` or `timeout`, re-route the same spec to `failover-implementer` — see Quota failover below for why this is a fixed, pinned-effort target rather than the class-dependent Fable escalation — and say so explicitly in your report; never quietly absorb the substitution or the cost change.
+If the codex lane returns `unavailable`, re-route the same spec to `failover-implementer` — see Quota failover below for why this is a fixed, pinned-effort target rather than the class-dependent Fable escalation — and say so explicitly in your report; never quietly absorb the substitution or the cost change. A `timeout` is not one of these: it means codex was working and ran out of clock, and it resumes in the same lane — see The wall clock below.
 
 ## Task classes and the Claude-side exceptions
 
@@ -109,7 +109,7 @@ Before anything gets bridged, establish that the capability is genuinely unreach
 
 ### Quota failover
 
-The two subscriptions have independent limits, and codex-by-default means the ChatGPT side is now the one that gets drained first. When codex returns a rate-limit, quota, `unavailable`, or `timeout` error, re-route the same spec to `failover-implementer` — a dedicated agent with `model: sonnet` and `effort: high` pinned in its own frontmatter. That pin is deliberate: this lane's effort is fixed and does not inherit, track, or get pulled up/down by whatever the architect's own session effort is set to (see Architect effort below) — it is always exactly `high`, independent of session state. It is a single fixed target: never a choice between `claude-committer` and `fable-implementer` by task class, and never Fable — Fable stays reserved for deliberate `hardest`-class escalation and the final review. **Say so in the report** — a silent failover turns a routing policy into a cost surprise. If the failover fires more than once in a session, stop and tell the user which side is exhausted; the correct fix is a routing decision, not more retries.
+The two subscriptions have independent limits, and codex-by-default means the ChatGPT side is now the one that gets drained first. When codex returns a rate-limit, quota, or `unavailable` error, re-route the same spec to `failover-implementer` — a dedicated agent with `model: sonnet` and `effort: high` pinned in its own frontmatter. That pin is deliberate: this lane's effort is fixed and does not inherit, track, or get pulled up/down by whatever the architect's own session effort is set to (see Architect effort below) — it is always exactly `high`, independent of session state. It is a single fixed target: never a choice between `claude-committer` and `fable-implementer` by task class, and never Fable — Fable stays reserved for deliberate `hardest`-class escalation and the final review. **Say so in the report** — a silent failover turns a routing policy into a cost surprise. If the failover fires more than once in a session, stop and tell the user which side is exhausted; the correct fix is a routing decision, not more retries. Timeouts do not fail over — see The wall clock.
 
 ### The tool handoff
 
@@ -125,7 +125,8 @@ Distinguish the handoff from failover, which looks similar and is not:
 
 | Trigger | Route |
 |---|---|
-| Codex is unavailable, timed out, rate-limited, quota-exhausted | `failover-implementer` — **implementation moves**. See Quota failover above |
+| Codex is unavailable, rate-limited, quota-exhausted | `failover-implementer` — **implementation moves**. See Quota failover above |
+| Codex ran out of wall clock with work in progress | resume the **same** codex lane with a fresh invocation carrying the `RESUME` block — see The wall clock |
 | Codex is fine but cannot reach a tool or a verification target | `tool-bridge` — **only the tool operation moves**; implementation ownership does not |
 
 A tool gap is never a reason to move a task to `failover-implementer`, to `fable-implementer`, or to the architect.
@@ -135,6 +136,18 @@ A tool gap is never a reason to move a task to `failover-implementer`, to `fable
 **Verification by proxy.** The commoner shape is not a missing fact but a verification the sandbox cannot run — a local database, a dev server, a browser flow, a visual check on an image. The bridge runs the verification and returns the evidence; a failure goes back to the lane as a corrected spec. The architect *judging* that evidence is verification. The architect *fixing the code* because it already has the evidence in hand is the ownership transfer this section forbids.
 
 **When the bridge fails.** `STATUS: blocked` is a stopping point, not a licence to implement. Options, in order: an alternative capability (a different tool, a different verification path), a reduced scope the lane can finish without it, or escalation to the user. The architect does not quietly start writing the remainder.
+
+### The wall clock
+
+The codex lane runs under two nested clocks: `gtimeout -k 10 570` around codex itself, inside a Bash call carrying `timeout: 600000`. The inner one must stay strictly shorter, because the outer starts first — at equal values the tool kills the call before `gtimeout` fires, and the lane never produces a `STATUS: timeout` at all. The outer bound is the Bash tool's configured maximum (600000 ms as this harness ships), so raising the inner cap past it buys nothing: the kill just moves outward, taking codex's exit status, its stderr, and the lane's chance to read the handoff in the same call with it.
+
+The budget is therefore fixed, and the only way to get more of it is a second invocation the architect makes. Two consequences follow.
+
+**Lanes never sub-delegate to buy time.** A sub-run shares the parent's clock: delegating at t=500 hands the child what is left minus its own startup, and the handoff is the first thing the kill destroys. Measured 2026-08-29 — two runs re-delegated near the deadline and returned zero artifacts. The lane's own instructions forbid it, and the mechanism that replaces it is `.codex-handoff.md`: progress kept on disk, where a SIGTERM cannot reach it.
+
+**A timeout is a resume, not a failover.** `STATUS: timeout` means codex was working and ran out of clock — the diff on disk and the `RESUME` block are real progress, from the model you routed to. Send a fresh codex invocation — never `codex exec resume`, per Resuming above — carrying the same six things that section names, with the `RESUME` block filling the progress slot in place of a tool result. It must also re-carry the lane's spec instructions verbatim, the no-delegate line and the handoff file among them; a resume that drops them re-opens on the second clock exactly the failure the first one taught you about. `failover-implementer` is for `unavailable`, rate limits, and quota, where the lane itself will not run; sending a timeout there discards finished work and restarts the task on a different model for no reason.
+
+Only when a resumed run times out again is the task genuinely too big for one lane, and then the fix is decomposition, not a different model. A task that needs more than one wall clock was under-decomposed — the handoff is the safety net, not the plan.
 
 ### Architect effort
 
@@ -255,7 +268,8 @@ Every routing decision is a data point for tuning this doctrine — the spawn fl
 
 - a delegated task reaches its final outcome (verified, escalated, or abandoned)
 - a task is **kept in-session via an exception** — these entries are what calibrate exceptions 1, 2, and 5
-- a failover fires (quota, rate limit, `unavailable`, `timeout`)
+- a failover fires (quota, rate limit, `unavailable`)
+- a lane times out and is resumed
 
 Fields:
 
@@ -269,6 +283,7 @@ Fields:
 - `effort` is the codex reasoning effort the lane actually ran with, `null` for every non-codex lane. It exists so the next retro can answer the question the old `max` pin was set without: did a `high` run ever fail in a way more depth would have caught?
 - `ctx` is the context inheritance grade that was actually passed. A two-pass final review logs `"facts→briefed"`.
 - `outcome: "spec-retry"` means the lane failed once and got a corrected spec; put the one-line cause of the spec gap in `note`. `"escalated"` means it moved to `fable-implementer`; `"failover"` means quota/availability re-routing (name the direction in `note`).
+- A lane that timed out and was resumed logs one line for the task, with `attempts` incremented and the timeout named in `note`. It is not a `failover` and needs no new `outcome` value — the work never left the lane.
 - `attempts` counts spec submissions to the final lane; `duration_s` is a rough wall-clock estimate, not a stopwatch reading.
 
 Append with a plain shell redirect — no jq, no wrapper script:

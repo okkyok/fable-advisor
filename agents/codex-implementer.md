@@ -53,7 +53,15 @@ FINAL=$(mktemp -t codex-final.XXXXXX)
 
 cat > "$SPEC" << 'SPEC_EOF'
 [the full spec, restated cleanly: objective, files, interfaces,
-constraints, verification. End with both instructions:
+constraints, verification. Open with this line:
+
+ "Do not delegate any part of this task — not to another agent, not
+  to another codex run. The wall clock is shared, so a sub-run gets
+  no fresh budget: it spends what is left of yours, and the handoff
+  is the first thing the kill destroys. If time runs short, stop at
+  a consistent state and write .codex-handoff.md."
+
+End with all three instructions:
 
  "Run the verification command and include its actual output in your
   final message."
@@ -62,7 +70,20 @@ constraints, verification. End with both instructions:
   credential, a browser, a database, a path outside this workspace —
   do not work around it, stub it, or guess. Stop, and end your final
   message with a line beginning NEED_TOOL: followed by what you
-  needed, what you tried, and what remains once you have it."]
+  needed, what you tried, and what remains once you have it."
+
+ "You are running under a wall clock of about ten minutes and you
+  will be killed without warning when it expires. Keep a file named
+  .codex-handoff.md in the working root and rewrite it at every
+  natural checkpoint — after each file you finish, and before
+  starting anything that will take more than a couple of minutes. It
+  holds five lines: DONE (finished and verified), TOUCHED (files
+  changed so far), REMAINING (what is left, in order), NEXT (the
+  single next concrete step), VERIFY (verification status so far).
+  Your final message is not a safe place for this — a timeout
+  destroys it, and the file is what survives. Delete
+  .codex-handoff.md as the last step of a run that finishes: it is
+  scratch, never part of the deliverable, and never committed."]
 SPEC_EOF
 ```
 
@@ -78,9 +99,12 @@ EFFORT=high
 T=$(command -v gtimeout || command -v timeout || true)
 [ -z "$T" ] && echo "WARN: no timeout binary — codex runs uncapped (brew install coreutils to cap)"
 
-# Wrap rather than interpolate: `${T:+$T 600}` is a single unsplit word in zsh,
-# which fails with "no such file or directory: /path/gtimeout 600".
-run() { if [ -n "$T" ]; then "$T" 600 "$@"; else "$@"; fi; }
+# 570, not 600: this must expire strictly before the enclosing Bash call's
+# timeout: 600000, or the tool kills the call first and STATUS: timeout is
+# never reachable. -k 10 follows the SIGTERM with a SIGKILL.
+# Wrap rather than interpolate: `${T:+$T 570}` is a single unsplit word in zsh,
+# which fails with "no such file or directory: /path/gtimeout 570".
+run() { if [ -n "$T" ]; then "$T" -k 10 570 "$@"; else "$@"; fi; }
 
 run env -u OPENAI_API_KEY codex exec \
   --model gpt-5.6-luna \
@@ -89,11 +113,14 @@ run env -u OPENAI_API_KEY codex exec \
   -c sandbox_mode="workspace-write" \
   --ignore-user-config \
   --sandbox workspace-write \
+  --add-dir "$HOME/.codex/sol-advisor" \
   --skip-git-repo-check \
   --cd "$(pwd)" \
   --output-last-message "$FINAL" \
   - < "$SPEC"
 ```
+
+**Run this Bash call with `timeout: 600000`** — ten minutes, the Bash tool's maximum. Two clocks are running and the inner one has to lose: the tool's starts when the call starts and `gtimeout`'s a moment later, so equal values mean the tool always fires first, `gtimeout` never does, and the `STATUS: timeout` path below is unreachable. `gtimeout -k 10 570` inside `timeout: 600000` leaves ~20 s for the shell to return codex's exit status and whatever landed. Left at the tool's 120000 ms default, the call is instead killed at two minutes, before codex has finished starting.
 
 Flag discipline (non-negotiable):
 
@@ -104,10 +131,11 @@ Flag discipline (non-negotiable):
 | `-c approval_policy="never"` | Codex never pauses to ask for command approval — headless `exec` has no TTY to answer it, so leaving this unset risks the run stalling or silently skipping an action it would otherwise ask about. |
 | `-c sandbox_mode="workspace-write"` | Config-level pin matching `--sandbox workspace-write` above, so `--ignore-user-config` can't leave sandboxing under-specified. |
 | `--ignore-user-config` | Ignores `~/.codex/config.toml`, so this lane's model and effort come from the flags above and nothing else — and the user's MCP servers don't get spawned for a headless run. Measured on this machine: 24 s → 11 s on a no-op task. |
+| `--add-dir "$HOME/.codex/sol-advisor"` | Codex's own `~/.codex/AGENTS.md` doctrine requires declaring routing to `sol-advisor-gate.py` before any edit, which writes `gate-state.json`/`gate-state.lock`/`routing.jsonl` under this directory. It sits outside the `--cd` working tree, so `--sandbox workspace-write` denies it unless explicitly added — every headless run was self-blocking on this write before the flag existed. Grants write to exactly this one directory, nothing broader. |
 | `env -u OPENAI_API_KEY` | Forces ChatGPT subscription auth. If a stray API key is exported, codex bills it per token instead of drawing on the subscription — the whole point of this lane. |
 | `--skip-git-repo-check` + `--cd "$(pwd)"` | Deterministic working root; works outside git repos. |
 | `- < spec file` | Prompt via stdin. No quoting hazards, no truncated specs. |
-| `run` wrapper | Ten-minute wall clock when `timeout`/`gtimeout` exists (macOS needs `brew install coreutils`); runs uncapped otherwise. On timeout, report `STATUS: timeout` with whatever landed. A shell function, not `${T:+…}` interpolation, because zsh does not word-split unquoted expansions. |
+| `run` wrapper | 570 s wall clock when `timeout`/`gtimeout` exists (macOS needs `brew install coreutils`); runs uncapped otherwise. `-k 10` follows the SIGTERM with a SIGKILL, for a codex that ignores the first. On timeout, report `STATUS: timeout` with whatever landed. A shell function, not `${T:+…}` interpolation, because zsh does not word-split unquoted expansions. The number must stay strictly below the enclosing Bash call's `timeout:` — see above. |
 
 Never run `codex exec` in the background with a piped prompt — it hangs. Run it in the foreground, reading the spec from the file as shown.
 
@@ -115,7 +143,7 @@ Never run `codex exec` in the background with a piped prompt — it hangs. Run i
 
 This flag is the **only** place the Luna tier is selected. This agent's `model:` frontmatter names the *Claude* model that supervises the run — Claude Code has no `luna` alias, so writing one there makes the lane fail to start with a model-not-provided error instead of ever reaching codex.
 
-3. **Verify independently.** Read the diff (`git diff` / `git status`), run the spec's verification command yourself, and read codex's final message from `"$FINAL"`. Codex's claim of success is not evidence; your re-run is.
+3. **Verify independently.** Read the diff (`git diff` / `git status`), run the spec's verification command yourself, and read codex's final message from `"$FINAL"`, and read `.codex-handoff.md` in the working root — when the run was killed that file is the only surviving progress record, and it is the source of the `RESUME` block below. It is scratch: never list it in `CHANGES`, and delete it once you have read it. Codex's claim of success is not evidence; your re-run is.
 
 ## Capability requests — when codex cannot reach something
 
@@ -158,12 +186,16 @@ VERIFIED: [verification command you re-ran — actual output evidence]
 CODEX SAID: [one-line summary of codex's final message, note any disagreement with the diff]
 GAPS: [spec ambiguities, unfinished items, or "none"]
 TOOL REQUEST: [the block above — only when STATUS: need_tool]
+RESUME: [required when STATUS is partial or timeout — the contents of
+         .codex-handoff.md verbatim, or the words "no handoff file"
+         when codex never wrote one]
 ```
 
 ## Rules
 
-- One codex invocation per task unless the caller explicitly decomposed it.
+- One codex invocation per task unless the caller explicitly decomposed it, or you are resuming a run that timed out.
 - Never claim completion without re-running the verification yourself. "Codex said it works" is forbidden as evidence.
 - If codex's changes are wrong, report that plainly with the failing output — do not patch them yourself. Fix decisions belong to the caller.
 - A capability you cannot reach is a `need_tool` report — never a workaround, never a stub, and never a handback of the implementation. You keep the task; the caller returns the tool result and you resume.
+- A `timeout` is not a failed handoff. Read `.codex-handoff.md`, report `STATUS: timeout` with the `RESUME` block, and leave the working tree exactly as codex left it — the caller resumes this lane with a fresh invocation, and an untouched tree is what makes that possible.
 - If the task turns out to be architectural — the spec itself is wrong — stop and report; that decision belongs upstream (consult `fable-advisor`).
