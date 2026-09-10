@@ -5,33 +5,62 @@ description: How this session decides between doing the work itself, handing it 
 
 # Orchestration
 
-You implement by default. You are the most capable model in this system and you
-already hold the conversation state; moving work out of the session costs a spec,
-a round trip, and a re-verification. Delegate when the delegation itself buys
-something you cannot get by typing the code yourself.
+**Implementation goes to the codex lane by default.** The two subscriptions are
+not interchangeable: Claude quota is the scarce resource and is what your own
+reasoning, review and integration consume, while the ChatGPT side runs Luna at
+high/max with far more headroom. Every routine implementation you type yourself
+spends the scarce budget on the abundant task.
 
-## The four reasons to delegate
+So the question is never "is this worth delegating" — it is "is there a reason
+this one cannot go to codex".
 
-Name one before you spawn. If you cannot name one, do the work.
+## When work stays Claude-side
 
-1. **Cross-vendor independence.** You want the answer from a different model
-   family — a second implementation to compare, or a reviewer who did not write
-   the code.
-2. **Quota distribution.** The work is large and mechanical and the ChatGPT side
-   can absorb it, saving Claude quota for judgment.
-3. **Isolation or parallelism.** Several independent pieces can run at once, or
-   the work would flood this session with output you do not need to see.
-4. **Stronger review.** The deliverable is risky enough that a fresh reader is
-   worth a round trip. See *Review*.
+Five reasons. Name the number when you keep something in-session.
 
-"It felt like it should be delegated" is not a reason. Neither is habit.
+1. **Context-bound.** The task depends on conversation state that a
+   self-contained spec would cost more to write down than to act on.
+2. **Below the spawn floor.** A round trip costs real seconds and tokens before
+   any work happens. Applies when you can name the number, not when it merely
+   feels faster.
+3. **Judgment-dominated.** The outcome turns on judgment a spec cannot carry, or
+   the codex lane has already failed this task twice.
+4. **Review.** `fable-advisor` reads the deliverable. See *Review*.
+5. **Claude-only tooling** — and it licenses the tool operation, not the
+   implementation. Run the tool, hand the result back, let the lane keep the code.
+
+None of these apply? It goes to codex.
+
+## Every codex lane runs in its own worktree
+
+Not a preference — the mechanism that prevents the one failure that costs real
+work. `codex exec` runs outside Claude Code's PreToolUse hooks, so nothing can
+police what it writes. Scoped at a repository root it will occasionally edit
+files its spec never listed, and the natural cleanup for that —
+`git checkout -- <path>` on the shared tree — destroys whatever *other*
+uncommitted work happened to live in those paths.
+
+`scripts/codex-lane.sh` removes that chain: the lane gets a disposable worktree
+seeded with the current tree state, so it cannot reach the main tree or another
+lane's tree; anything it writes outside its Files is reported and left behind;
+and undoing a lane is `git worktree remove`, never a checkout. Parallel lanes are
+therefore safe by construction — run as many as the work splits into.
+
+```bash
+scripts/codex-lane.sh --spec <specfile> --files "<f1,f2,...>" --effort high
+# then, after reading its LANE REPORT:
+scripts/codex-lane-apply.sh --worktree <wt> --repo <repo> --files "<f1,f2,...>" --remove
+```
+
+Apply only the paths in **Files**. A `SCOPE VIOLATIONS` list is a signal the spec
+was under-specified — fix the spec, not the tree.
 
 ## The lanes
 
 | Lane | Model | Use for |
 |---|---|---|
-| `codex-implementer` | GPT via `codex exec` | Cross-vendor implementation and quota distribution. Well-specified work whose outcome a spec fully determines. |
-| `implementer` | you choose per spawn: `haiku`, `sonnet`, or `fable` | Claude-side implementation you want out of this session — bulk mechanical edits (`haiku`), the codex quota failover target (`sonnet`), judgment-heavy one-offs (`fable`). |
+| `codex-implementer` | Luna via `codex exec` | **The default.** All routine implementation. Runs in its own worktree. |
+| `implementer` | per spawn: `haiku`, `sonnet`, `fable` | Claude-side implementation. `sonnet` is the codex quota-failover target; `fable` is for reason 3; `haiku` for bulk mechanical edits worth removing from your context. |
 | `fable-advisor` | Fable 5 | Independent review and second opinions. Advises only — it holds no write tools. |
 
 Set the model on the spawn itself; it outranks the agent file's frontmatter.
@@ -76,10 +105,12 @@ A lane that finishes with an empty diff has failed. Re-issue it; do not accept i
 
 | What happened | What to do |
 |---|---|
-| Codex unavailable, rate-limited, or quota-exhausted | Implementation moves: respawn as `implementer` with `model: sonnet`. |
-| Codex ran out of wall clock with work in progress | Do **not** move lanes. Respawn the same lane with a `RESUME` block naming what landed and what remains. |
+| **Codex quota exhausted** | **Stop and report the reset time. Do not silently fail over to Claude.** Failing over spends the scarce subscription at the exact moment the abundant one is unavailable — over five weeks this pattern moved 47 tasks and ~5.8 hours onto the Claude side, none of them because the task needed Claude. Tell the user when codex returns and let them choose: wait, or authorise `implementer` with `model: sonnet`. |
+| Codex unavailable for a non-quota reason (auth, broken install) | Report it with the probe output. This is a fix, not a reroute — a retry will fail the same way. |
+| Codex ran out of wall clock with work in progress | Do **not** move lanes. Respawn the same lane against **the same worktree** with a `RESUME` block naming what landed and what remains. |
 | Codex cannot reach a tool or a verification target | Run that one operation yourself, hand the result back, and let the lane keep the implementation. A capability gap is not a change of owner. |
-| Same task failed twice in the same lane | Stop retrying. Either implement it yourself or escalate to `implementer` with `model: fable`. |
+| `SCOPE VIOLATIONS` in the lane report | The spec was under-specified. Apply only the allowed paths, widen **Files** if the extra paths were genuinely required, and re-issue. Never reconcile it with a checkout on the main tree. |
+| Same task failed twice in the same lane | Stop retrying. Reason 3 now applies: escalate to `implementer` with `model: fable`. |
 
 **Wall clock.** A lane has a bounded budget and cannot ask for more mid-run. Size
 the spec to finish inside it. If a task plausibly exceeds it, split it at a point

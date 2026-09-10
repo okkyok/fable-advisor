@@ -103,7 +103,29 @@ SPEC_EOF
 
 2. Invoke codex non-interactively, sandboxed to the workspace, at the effort the caller named:
 
-Before this invocation, derive `WORKDIR` from every path in the spec's `Files`: use the toplevel of the innermost git repository containing all of them; if the files do not fit one repository, use their innermost common directory. Pass that value as `--cd "$WORKDIR"`; never derive it from the caller's current directory, and keep `--skip-git-repo-check` because the derived root may not be a git repository. Never pass `$HOME` itself: if the Files-derived root equals `$HOME`, do not run the command; report `STATUS: blocked` and ask the architect to narrow the spec's Files. PreToolUse hooks cannot see inside `codex exec`, so the sandbox scope is the only mechanical control available; on 2026-09-04, a codex lane started from the home directory entered the unrelated real project `/Users/okky/dev/cocomil/kyomi/posting-tracker` and deleted untracked files that another task was restoring.
+Do not build this command line yourself. Write the spec to a file and run the
+lane script, which creates the isolated worktree, pins every sandbox flag, and
+reports what the lane touched:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/codex-lane.sh" \
+  --spec "$SPEC" --files "<the spec's Files, comma-separated>" --effort "$EFFORT"
+```
+
+Read its `LANE REPORT`. Report `SCOPE VIOLATIONS` verbatim in your `GAPS` — they
+mean the spec was under-specified, and the architect decides what to do. Never
+apply them yourself, and never run `git checkout`, `restore`, `reset`, `clean` or
+`stash` against the main tree to tidy up after the lane: the worktree exists
+precisely so that undoing a lane is `git worktree remove` and can never take a
+co-resident lane's uncommitted work with it.
+
+Exit codes: `3` codex unavailable · `4` timeout (worktree kept — resume against
+it) · `5` blocked, usually because the spec's Files do not resolve inside one git
+repository. On `5`, report `STATUS: blocked` and ask the architect to narrow the
+Files rather than widening the scope yourself.
+
+The reference invocation the script performs is below. It is documentation — run
+the script, not this.
 
 ```bash
 # Substitute the value from the caller's EFFORT: line — low | medium | high | max.
