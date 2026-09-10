@@ -1,7 +1,7 @@
 {
   "name": "fable-advisor",
   "metadata": {
-    "description": "Model-routing patterns for Claude Code: Opus architect-as-orchestrator with a GPT-5.6 Sol routine lane, a Fable 5 high-complexity lane, and a Fable 5 end-of-deliverable reviewer."
+    "description": "Delegation control plane for Claude Code: implement by default, delegate for a named reason — a GPT-5.6 Luna Codex lane, one model-parameterized Claude-side implementer, and a Fable 5 reviewer used in proportion to risk."
   },
   "owner": {
     "name": "Dan McAteer",
@@ -11,7 +11,7 @@
     {
       "name": "fable-advisor",
       "source": "./",
-      "description": "Opus architect-as-orchestrator: your session writes specs and verdicts, routing routine implementation to GPT-5.6 Sol (Codex CLI) and high-complexity one-offs to Fable 5 — with a mandatory Fable review before anything ships."
+      "description": "Your session implements by default and delegates only when it buys cross-vendor independence, quota distribution, isolation, or a stronger review. Three lanes: Codex (GPT-5.6 Luna), a haiku/sonnet/fable implementer selected on the spawn, and a read-only Fable 5 reviewer."
     }
   ]
 }

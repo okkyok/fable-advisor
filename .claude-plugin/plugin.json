@@ -1,7 +1,7 @@
 {
   "name": "fable-advisor",
-  "version": "4.10.0",
-  "description": "Run your session on Opus as a full-time architect: it writes specs and verdicts, GPT-5.6 Luna (via Codex) does the routine typing at a reasoning effort set per task class, Fable 5 handles the high-complexity one-offs — and reviews every deliverable before it ships. This fork adds six task classes, five named exceptions for keeping work Claude-side, a Haiku floor lane, a tool-bridge lane that keeps a missing capability from moving implementation ownership, quota failover between the two subscriptions, and context inheritance grades with a two-pass final review that keeps the reviewer from inheriting the implementer's blind spots.",
+  "version": "5.0.0",
+  "description": "A small control plane for delegation: your session implements by default, and delegates only when the delegation buys cross-vendor independence, quota distribution, isolation, or a stronger review. Ships three lanes — a Codex lane (GPT-5.6 Luna) for cross-vendor implementation and ChatGPT-quota work, one model-parameterized Claude-side implementer (haiku/sonnet/fable, chosen on the spawn), and a read-only Fable 5 reviewer used in proportion to blast radius. Includes the silence-gap check for defects of omission and a two-pass review that keeps the reviewer from inheriting the implementer's claims.",
   "author": {
     "name": "Dan McAteer",
     "url": "https://github.com/DannyMac180"

@@ -14,10 +14,24 @@ You are the default implementation lane. You do not write the code yourself — 
 First action, always:
 
 ```bash
-command -v codex && codex --version </dev/null
+command -v codex && gtimeout 60 codex exec --model gpt-5.6-luna 'reply with READY' </dev/null
 ```
 
-Require actual version output. A `codex` that prints nothing and exits 137 is on PATH but unusable — macOS SIGKILLs a binary whose signing certificate has been revoked, which is what a stale codex install looks like from the outside. Treat that as `unavailable`, and say the version check produced no output; the fix is `npm install -g @openai/codex@latest`, not a retry. If `which -a codex` shows more than one install, report which one PATH resolved to — a shadowed stale copy is the usual cause.
+Probe with `codex exec`, never with `codex --version` or `codex --help`. Those
+two subcommands hang indefinitely on some builds (confirmed on 0.153.4: both
+return rc=124 under a timeout, with empty stdout and stderr, while `codex exec`
+still works). A preflight built on them reports `unavailable` for a healthy
+install and silently dumps every task onto the failover lane.
+
+Judge the probe by what `codex exec` does:
+
+- **Prints `READY`** — codex is usable. Proceed.
+- **Auth or quota error** — `unavailable`. Report the reset time verbatim if the
+  message carries one; the caller reroutes rather than retries.
+- **rc=124 (probe timed out), or exits non-zero with no output** — `unavailable`.
+  Say the probe produced no output. If `which -a codex` shows more than one
+  install, report which one PATH resolved to; a shadowed stale copy is the usual
+  cause, and the fix is a reinstall, not a retry.
 
 If codex is not installed or not authenticated, **stop immediately** and return:
 
@@ -89,7 +103,29 @@ SPEC_EOF
 
 2. Invoke codex non-interactively, sandboxed to the workspace, at the effort the caller named:
 
-Before this invocation, derive `WORKDIR` from every path in the spec's `Files`: use the toplevel of the innermost git repository containing all of them; if the files do not fit one repository, use their innermost common directory. Pass that value as `--cd "$WORKDIR"`; never derive it from the caller's current directory, and keep `--skip-git-repo-check` because the derived root may not be a git repository. Never pass `$HOME` itself: if the Files-derived root equals `$HOME`, do not run the command; report `STATUS: blocked` and ask the architect to narrow the spec's Files. PreToolUse hooks cannot see inside `codex exec`, so the sandbox scope is the only mechanical control available; on 2026-09-04, a codex lane started from the home directory entered the unrelated real project `/Users/okky/dev/cocomil/kyomi/posting-tracker` and deleted untracked files that another task was restoring.
+Do not build this command line yourself. Write the spec to a file and run the
+lane script, which creates the isolated worktree, pins every sandbox flag, and
+reports what the lane touched:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/codex-lane.sh" \
+  --spec "$SPEC" --files "<the spec's Files, comma-separated>" --effort "$EFFORT"
+```
+
+Read its `LANE REPORT`. Report `SCOPE VIOLATIONS` verbatim in your `GAPS` — they
+mean the spec was under-specified, and the architect decides what to do. Never
+apply them yourself, and never run `git checkout`, `restore`, `reset`, `clean` or
+`stash` against the main tree to tidy up after the lane: the worktree exists
+precisely so that undoing a lane is `git worktree remove` and can never take a
+co-resident lane's uncommitted work with it.
+
+Exit codes: `3` codex unavailable · `4` timeout (worktree kept — resume against
+it) · `5` blocked, usually because the spec's Files do not resolve inside one git
+repository. On `5`, report `STATUS: blocked` and ask the architect to narrow the
+Files rather than widening the scope yourself.
+
+The reference invocation the script performs is below. It is documentation — run
+the script, not this.
 
 ```bash
 # Substitute the value from the caller's EFFORT: line — low | medium | high | max.
