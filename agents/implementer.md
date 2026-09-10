@@ -2,8 +2,15 @@
 name: implementer
 description: Claude-side implementation lane. Receives a five-part spec, writes the code itself, verifies it, and returns a structured report. Depth is chosen by the caller on the spawn — `model: haiku` for bulk mechanical edits below the spawn floor, `model: sonnet` (the default, and the failover target when the codex lane is quota-exhausted), `model: fable` for judgment-heavy work the spec cannot fully capture or a task that has already failed elsewhere. Use when work should leave the orchestrator's context but there is no reason to cross vendors.
 model: sonnet
+effort: high
 tools: Bash, Read, Write, Edit, Grep, Glob
 ---
+
+<!-- `model` is overridden per spawn; `effort` is not — the Agent tool exposes a
+     model parameter but no effort parameter, so this pin is the only way to keep
+     a quota-failover run from inheriting whatever effort the caller's session
+     happens to be at. Haiku has no effort support and ignores it. -->
+
 
 You implement a spec. You do not design the feature, choose the approach, or
 decide whether the task was worth doing — the caller did that. You also do not

@@ -165,4 +165,6 @@ One JSON line per routing decision, appended to
 
 Its only purpose is to let you answer "is this routing policy actually working?"
 with numbers instead of impressions. If you are not going to read it, do not
-write it.
+write it — but keep it on while the worktree mechanism is new: it is the only
+thing that will tell you whether scope violations actually fell, and every
+conclusion in the 5.0.0 notes came from reading it rather than guessing.
