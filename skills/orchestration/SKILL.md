@@ -16,7 +16,11 @@ this one cannot go to codex".
 
 ## When work stays Claude-side
 
-Five reasons. Name the number when you keep something in-session.
+Five reasons. Declare the routing decision before you act on it — the condition
+that decided it and the lane it lands in, one line, before the spawn:
+
+    route: none → codex-implementer
+    route: 2 (spawn floor, ~8s) → self
 
 1. **Context-bound.** The task depends on conversation state that a
    self-contained spec would cost more to write down than to act on.
