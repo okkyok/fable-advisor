@@ -1,7 +1,7 @@
 {
   "name": "fable-advisor",
-  "version": "5.0.0",
-  "description": "A small control plane for delegation: your session implements by default, and delegates only when the delegation buys cross-vendor independence, quota distribution, isolation, or a stronger review. Ships three lanes — a Codex lane (GPT-5.6 Luna) for cross-vendor implementation and ChatGPT-quota work, one model-parameterized Claude-side implementer (haiku/sonnet/fable, chosen on the spawn), and a read-only Fable 5 reviewer used in proportion to blast radius. Includes the silence-gap check for defects of omission and a two-pass review that keeps the reviewer from inheriting the implementer's claims.",
+  "version": "5.0.1",
+  "description": "A small control plane for delegation: implementation goes to the Codex lane (GPT-5.6 Luna) by default, because Claude quota is the scarce resource your reasoning, review and integration consume, and work stays Claude-side only for one of five named reasons. Every lane runs in a disposable git worktree, so a lane cannot reach the main tree or another lane's uncommitted work and undoing one is a worktree removal rather than a checkout. Also ships a model-parameterized Claude-side implementer (haiku/sonnet/fable, chosen on the spawn) and a read-only Fable 5 reviewer used in proportion to blast radius, with the silence-gap check for defects of omission and a two-pass review that keeps the reviewer from inheriting the implementer's claims.",
   "author": {
     "name": "Dan McAteer",
     "url": "https://github.com/DannyMac180"

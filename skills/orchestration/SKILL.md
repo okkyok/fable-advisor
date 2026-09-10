@@ -1,6 +1,6 @@
 ---
 name: orchestration
-description: How this session decides between doing the work itself, handing it to a cross-vendor implementation lane, and getting an independent review. USE WHEN deciding whether a task is worth delegating, writing a spec for a subagent, choosing a lane, handling a codex quota failure or wall-clock timeout, or deciding whether a deliverable needs an independent review before you report done.
+description: How this session routes implementation to the codex lane by default, when work instead stays Claude-side for one of five named reasons, and when a deliverable earns an independent review. USE WHEN deciding whether a task can go to codex, writing a spec for a subagent, choosing a lane, running a lane in its isolated worktree, handling a codex quota failure or wall-clock timeout, or deciding whether a deliverable needs an independent review before you report done.
 ---
 
 # Orchestration
@@ -16,7 +16,11 @@ this one cannot go to codex".
 
 ## When work stays Claude-side
 
-Five reasons. Name the number when you keep something in-session.
+Five reasons. Declare the routing decision before you act on it — the condition
+that decided it and the lane it lands in, one line, before the spawn:
+
+    route: none → codex-implementer
+    route: 2 (spawn floor, ~8s) → self
 
 1. **Context-bound.** The task depends on conversation state that a
    self-contained spec would cost more to write down than to act on.
