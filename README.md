@@ -35,6 +35,7 @@ caller reroutes; it never silently substitutes a different model.
 | `agents/implementer` | Claude-side implementation. Depth chosen on the spawn: `model: haiku` / `sonnet` / `fable`. |
 | `scripts/codex-lane.sh` | Runs a Codex lane inside an isolated worktree and reports what it touched, including paths outside its spec. |
 | `scripts/codex-lane-apply.sh` | Copies only the spec'd paths back into the main tree. Purely additive — never checkout/reset/clean/stash. |
+| `scripts/verify-codex-lane.sh` | Self-test: runs a real lane against a scratch repo and asserts a co-resident lane's uncommitted work survives. |
 | `agents/fable-advisor` | Read-only reviewer and second opinion (Fable 5). Holds no write tools, so "advises only" is mechanical rather than aspirational. |
 
 ## The routing policy in one paragraph
@@ -77,8 +78,8 @@ resolves a per-spawn `model` parameter ahead of agent frontmatter. `tool-bridge`
 is removed: over five weeks it was used 4 times against 47 cases of the situation
 it existed to prevent, so it was doctrine that did not describe reality.
 
-**Also.** The orchestration skill drops from 39.8 KB to ~7 KB — the routing
-matrix, the four reasons, the failure table, the spec contract, the silence gap
+**Also.** The orchestration skill drops from 39.8 KB to ~9.5 KB — the routing
+matrix, the five reasons, the failure table, the spec contract, the silence gap
 and the two-pass review survive; the cost-discipline preamble, effort-selection
 ceremony, context-inheritance grades, mandatory ledger prose and two
 self-referential calibration sections do not. The codex preflight no longer uses
