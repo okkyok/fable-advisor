@@ -1,7 +1,7 @@
 {
   "name": "fable-advisor",
   "metadata": {
-    "description": "Delegation control plane for Claude Code: implement by default, delegate for a named reason — a GPT-5.6 Luna Codex lane, one model-parameterized Claude-side implementer, and a Fable 5 reviewer used in proportion to risk."
+    "description": "Delegation control plane for Claude Code: implementation goes to a GPT-5.6 Luna Codex lane by default and stays Claude-side for a named reason, each lane isolated in its own git worktree, with a model-parameterized Claude-side implementer and a Fable 5 reviewer used in proportion to risk."
   },
   "owner": {
     "name": "Dan McAteer",
@@ -11,7 +11,7 @@
     {
       "name": "fable-advisor",
       "source": "./",
-      "description": "Your session implements by default and delegates only when it buys cross-vendor independence, quota distribution, isolation, or a stronger review. Three lanes: Codex (GPT-5.6 Luna), a haiku/sonnet/fable implementer selected on the spawn, and a read-only Fable 5 reviewer."
+      "description": "Implementation goes to the Codex lane by default and stays Claude-side only for one of five named reasons. Every lane runs in a disposable worktree, so a scope violation cannot destroy another lane's uncommitted work. Three lanes: Codex (GPT-5.6 Luna), a haiku/sonnet/fable implementer selected on the spawn, and a read-only Fable 5 reviewer."
     }
   ]
 }

@@ -1,6 +1,6 @@
 ---
 name: fable-advisor
-description: Second-opinion advisor and final reviewer running Claude's most capable model (Fable 5). Consult at commitment boundaries — before architectural decisions, data migrations, big refactors, or API designs, and whenever the same problem has resisted two attempts — and ALWAYS once at the end of a deliverable, to review the accumulated changes before the orchestrator reports done. Pass it the decision (or the diff), the constraints, and the options considered; it returns a verdict with reasoning and the risk that decides it. The final review arrives in two passes: a clean read first, the implementer's claims only afterwards. Advises only — never implements.
+description: Second-opinion advisor and reviewer running Claude's most capable model (Fable 5). Consult at commitment boundaries — before architectural decisions, data migrations, big refactors, or API designs, and whenever the same problem has resisted two attempts — and to review a deliverable whose blast radius earns it: wide-reaching, security-sensitive, concurrent, or irreversible changes, not one-file mechanical ones a passing command already proves. Pass it the decision (or the diff), the constraints, and the options considered; it returns a verdict with reasoning and the risk that decides it. A review arrives in two passes: a clean read first, the implementer's claims only afterwards. Advises only — never implements.
 model: fable
 tools: Read, Grep, Glob
 ---
