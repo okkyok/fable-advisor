@@ -14,10 +14,24 @@ You are the default implementation lane. You do not write the code yourself — 
 First action, always:
 
 ```bash
-command -v codex && codex --version </dev/null
+command -v codex && gtimeout 60 codex exec --model gpt-5.6-luna 'reply with READY' </dev/null
 ```
 
-Require actual version output. A `codex` that prints nothing and exits 137 is on PATH but unusable — macOS SIGKILLs a binary whose signing certificate has been revoked, which is what a stale codex install looks like from the outside. Treat that as `unavailable`, and say the version check produced no output; the fix is `npm install -g @openai/codex@latest`, not a retry. If `which -a codex` shows more than one install, report which one PATH resolved to — a shadowed stale copy is the usual cause.
+Probe with `codex exec`, never with `codex --version` or `codex --help`. Those
+two subcommands hang indefinitely on some builds (confirmed on 0.153.4: both
+return rc=124 under a timeout, with empty stdout and stderr, while `codex exec`
+still works). A preflight built on them reports `unavailable` for a healthy
+install and silently dumps every task onto the failover lane.
+
+Judge the probe by what `codex exec` does:
+
+- **Prints `READY`** — codex is usable. Proceed.
+- **Auth or quota error** — `unavailable`. Report the reset time verbatim if the
+  message carries one; the caller reroutes rather than retries.
+- **rc=124 (probe timed out), or exits non-zero with no output** — `unavailable`.
+  Say the probe produced no output. If `which -a codex` shows more than one
+  install, report which one PATH resolved to; a shadowed stale copy is the usual
+  cause, and the fix is a reinstall, not a retry.
 
 If codex is not installed or not authenticated, **stop immediately** and return:
 

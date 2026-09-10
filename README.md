@@ -1,110 +1,69 @@
-# Fable Advisor
+# fable-advisor
 
-**Opus runs the show. Cheaper typing, smarter escalation, and a Fable review before anything ships.**
+A small control plane for delegation in Claude Code.
 
-Claude Code lets every subagent run on a different model — and lets the session itself run on a different model than its subagents. This plugin exploits that with the **architect pattern**: your session runs on **Opus**, acting as a full-time architect. It owns requirements, decomposition, specs, and verification — routes every implementation task to the right lane — and gets a **Fable 5** review of the finished work before calling anything done:
+Your session implements by default. It delegates only when the delegation itself
+buys something: cross-vendor independence, ChatGPT-quota distribution, isolation
+or parallelism, or a stronger review. Reviews are sized to blast radius rather
+than applied to everything.
 
-| Lane | Producer | Invocation | Route here when |
-|---|---|---|---|
-| Routine | **GPT-5.6 Luna** (reasoning effort by task class) | `codex-implementer` agent (default) | The spec fully determines the outcome — Codex does the typing via the [Codex CLI](https://github.com/openai/codex) |
-| High-complexity | **Fable 5** | `fable-implementer` agent | One-off tasks where judgment the spec can't capture decides the outcome: subtle concurrency, hard debugging, security-sensitive paths, wide refactors |
-| Tool bridge | **Claude Haiku 4.5** (`model: sonnet` for multi-step work) | `tool-bridge` agent | An implementer hit a capability it cannot reach — MCP, a browser, the simulator, an OAuth'd connector, or a verification its sandbox cannot run. The bridge performs **only** the tool operation and returns a short structured result; the implementer resumes and keeps the code |
-| Review | **Fable 5** | `fable-advisor` agent | Commitment boundaries, and **always once at the end** — the advisor reviews the accumulated changes in two passes, clean read first, before the architect reports done |
-
-Tokens route by capability: Opus emits judgment and specs, the cheap cross-vendor lane emits the bulk of the code, and Fable — the most expensive model available — is spent only where it changes outcomes: the hardest implementations and the final review. Because the routine lane is a *different model family* than the architect, cross-vendor review is built into the routing, not bolted on. For high-stakes work, run `codex-implementer` and `fable-implementer` on the same spec and let the architect pick the stronger diff.
-
-The plugin ships the **orchestration skill** — the routing doctrine that teaches the session when to use each lane, the cost discipline that keeps expensive-model token volume minimal (emit judgment not volume, keep context lean, reason once then hand off), the five-part spec contract that makes context-free delegation safe, the context inheritance grades that decide what a receiving agent may and may not be told, and the verification rules that keep every lane honest.
+This is a fork of [DannyMac180/fable-advisor](https://github.com/DannyMac180/fable-advisor).
 
 ## Install
 
 ```
-claude plugin marketplace add DannyMac180/fable-advisor
-claude plugin install fable-advisor@fable-advisor
+/plugin marketplace add okkyok/fable-advisor
+/plugin install fable-advisor@fable-advisor
 ```
 
-Updating an existing installation to the latest release:
+The `codex` lane additionally needs the [OpenAI Codex CLI](https://github.com/openai/codex)
+installed and authenticated. Without it the lane reports `unavailable` and the
+caller reroutes; it never silently substitutes a different model.
 
-```
-claude plugin marketplace update fable-advisor
-claude plugin update fable-advisor@fable-advisor
-```
+## What ships
 
-Then start your session as the architect:
+| | |
+|---|---|
+| `skills/orchestration` | The routing policy. Loads when you are deciding whether and how to delegate. |
+| `agents/codex-implementer` | Runs `codex exec` (GPT-5.6 Luna). The cross-vendor implementation lane. |
+| `agents/implementer` | Claude-side implementation. Depth chosen on the spawn: `model: haiku` / `sonnet` / `fable`. |
+| `agents/fable-advisor` | Read-only reviewer and second opinion (Fable 5). Holds no write tools, so "advises only" is mechanical rather than aspirational. |
 
-```
-/model opus
-```
+## The routing policy in one paragraph
 
-**Lite mode — one file, 30 seconds.** Don't want the full pattern? Copy [`agents/fable-advisor.md`](agents/fable-advisor.md) into `~/.claude/agents/` and keep your session on Sonnet. You get advisor consults at commitment boundaries without the orchestration layer (see "Advisor-only mode" below).
+Name one of four reasons before you spawn — cross-vendor independence, quota
+distribution, isolation/parallelism, stronger review — or do the work yourself.
+Write a five-part spec (objective, files, interfaces, constraints, verification);
+anything you leave out, the lane invents. Codex quota exhaustion moves the
+implementation to `implementer` with `model: sonnet`; a codex *timeout* does not
+move lanes, it resumes the same one. A capability the lane cannot reach is a
+one-off tool operation you run for it, not a transfer of ownership. Review in
+proportion to blast radius, and before reviewing, compute the *silence gap* —
+what the change should have touched minus what it did — because a diff shows
+what changed and never what should have changed and didn't.
 
-## Requirements
+## 5.0.0
 
-- **Claude Code ≥ 2.1.170** with a subscription that includes Fable 5 (Pro, Max, Team, or Enterprise — all current consumer plans qualify).
-- **No Fable access** (e.g. API-key billing)? Change `model: fable` → `model: opus` in the advisor and implementer files. Same pattern, the Fable roles shift down to Opus.
-- **Codex lane (the default implementer):** the `codex-implementer` agent needs the [OpenAI Codex CLI](https://github.com/openai/codex) installed and authenticated (`npm i -g @openai/codex`, then `codex login`). It invokes **GPT-5.6 Luna** as `gpt-5.6-luna`, with `model_reasoning_effort` set per task class by the caller — `high` by default, `low`/`medium` for trivial or search-shaped work, and `max` only under the named conditions in the orchestration skill. GPT-5.6 access may be limited during preview; without model access, an installed/authenticated CLI, or successful authentication, the agent reports `STATUS: unavailable` — it never silently falls back to a Claude model — and the Fable lanes remain unaffected.
-- Heads-up: if a pinned Claude model isn't available on your account, Claude Code silently falls back to your session model — the pattern degrades quietly rather than erroring. If results feel unremarkable, check your plan. (This quiet fallback applies only to Claude model pins — the codex lane always fails loudly with a structured error.)
+Rebuilt around measured behaviour rather than the original doctrine. Over 1,065
+logged routing decisions on the author's machine, the previous "delegate to Codex
+by default" policy produced a 60.8% success rate against 92.5% for the same class
+of work done in-session, at the same median wall clock, with a 27% wasted-retry
+overhead against 3%. The default is now inverted.
 
-Model resolution order in Claude Code: `CLAUDE_CODE_SUBAGENT_MODEL` env var → per-invocation `model` parameter → agent frontmatter → session model.
+**Breaking.** `fable-implementer`, `failover-implementer` and `claude-committer`
+are merged into `implementer` — they differed only by `model:`, and Claude Code
+resolves a per-spawn `model` parameter ahead of agent frontmatter. `tool-bridge`
+is removed: over five weeks it was used 4 times against 47 cases of the situation
+it existed to prevent, so it was doctrine that did not describe reality.
 
-## Use it
-
-With the session on Opus, just ask for work — the orchestration skill routes it:
-
-```
-Add rate limiting to our public API. Design it, delegate the
-implementation, and verify the evidence before you call it done.
-```
-
-The architect writes the spec, picks the lane (rate limiting touches concurrency — a good case for `fable-implementer`, or for racing it against `codex-implementer` and picking the stronger diff), reads the diff and verification evidence when the report comes back, sends the finished work to `fable-advisor` for the final review, and only then reports done.
-
-To make the doctrine always-on, add one line to your project's `CLAUDE.md`:
-
-```
-You are the architect — minimize your own token volume. Delegate all
-implementation through the orchestration skill's routing table (never
-type code yourself), delegate broad codebase exploration to cheap
-read-only agents, verify evidence before accepting any lane's report,
-and get a fable-advisor review before reporting any deliverable done.
-```
-
-## Commitment boundaries and the final review
-
-Even the architect gets a second opinion. The `fable-advisor` agent is a read-only skeptic — consulted before architecture decisions, migrations, API designs, whenever a problem has resisted two attempts, and **always once at the end of a deliverable**, where it reads the accumulated diff against the stated goal rather than the conversation, and returns ship / fix-first / rethink. It never implements.
-
-The final review runs in **two passes**, because a reviewer that inherits the implementer's framing inherits its blind spots. Pass 1 is `facts` grade: the diff, the goal, the constraints, and a *silence gap* — files structurally inside the blast radius that nobody's report mentions — and it returns numbered findings. Pass 2 hands over the implementer's claims as a list of assertions to falsify, and a finding may only be withdrawn against named file:line evidence. Independence comes from the ordering, not from starving the reviewer: the clean read is on the record before the claims arrive. The doctrine ships with dated retreat conditions so the second pass can be retired on ledger evidence if anchoring never shows up.
-
-## Advisor-only mode (the original pattern)
-
-The minimal arrangement, for when you'd rather skip the orchestration layer: run the session on Sonnet and consult `fable-advisor` only at commitment boundaries.
-
-```
-Migrate our checkout sessions from Postgres to Redis — plan it,
-consult your advisor before committing, then implement.
-```
-
-A typical consult costs cents. To make it automatic, add to your project's `CLAUDE.md`:
-
-```
-Before committing to any architecture decision, migration, or refactor
-touching 3+ files, consult the fable-advisor agent and act on its verdict.
-```
-
-## FAQ
-
-**Is this Anthropic's "advisor tool"?** No — that's a server-side API feature. These are plain Claude Code subagents plus a skill: readable, editable, no beta flags.
-
-**Does this work on claude.ai?** No — subagent model routing is Claude Code only (CLI, desktop, VS Code, web).
-
-**Why not just run everything on Fable?** You can. It's excellent. It's also the most expensive lane per token, and most of a session's tokens are orchestration and implementation mechanics that Opus and the codex lane handle at near-parity. Spend the premium where it changes outcomes: the hardest tasks and the final review.
-
-**Upgrading from v3?** v4 restructures the routing: the session architect moves from Fable to **Opus**, the Grok 4.5 lane is **removed**, `codex-implementer` (GPT-5.6 Sol) becomes the default typing lane, and Fable's premium is refocused on the new `fable-implementer` high-complexity lane plus a now-mandatory end-of-deliverable `fable-advisor` review. If you still want the Grok lane, grab [`grok-implementer.md` from the v3.1 tree](https://github.com/DannyMac180/fable-advisor/blob/b3b50a9/agents/grok-implementer.md).
-
-**Why a GPT lane in a Claude plugin?** Vendor diversity. Models from one family share blind spots; an independent implementation from a different lineage catches what same-family review misses — and with Claude as the architect and reviewer, every routine diff gets cross-vendor review for free. The architect and reviewer stay Claude — the routine lane is a producer, not a judge.
-
-## Go deeper
-
-I write [**Attention Heads**](https://attentionheads.substack.com/?utm_source=github&utm_medium=readme&utm_campaign=fable-advisor) — deep, evidence-backed writing on AI, cognition, and agentic engineering. The **Agentic Engineering Field Notes** series is where I publish practical advice on the craft of using AI. [Subscribe](https://attentionheads.substack.com/subscribe?utm_source=github&utm_medium=readme&utm_campaign=fable-advisor) to get new posts to your inbox.
+**Also.** The orchestration skill drops from 39.8 KB to ~7 KB — the routing
+matrix, the four reasons, the failure table, the spec contract, the silence gap
+and the two-pass review survive; the cost-discipline preamble, effort-selection
+ceremony, context-inheritance grades, mandatory ledger prose and two
+self-referential calibration sections do not. The codex preflight no longer uses
+`codex --version`, which hangs on some builds and made a healthy install look
+unavailable.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

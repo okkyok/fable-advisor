@@ -1,345 +1,137 @@
 ---
 name: orchestration
-description: Routing doctrine for the architect-as-orchestrator pattern — how an Opus session delegates routine implementation to a cheaper cross-vendor lane, escalates high-complexity one-offs to Fable, and gets every deliverable reviewed by the Fable advisor before reporting done. Codex is the default lane; work stays Claude-side only under five named exceptions. USE WHEN delegating implementation work, classifying a task as commit/implement/explore/ingest/review/hardest, deciding whether something is worth a codex round trip or should stay in-session, choosing between codex-implementer/fable-implementer/claude-committer lanes, setting the codex reasoning effort for a task, writing a spec for a subagent, deciding whether to consult fable-advisor, handling a codex quota or rate-limit failover, resuming a codex lane that ran out of wall clock, handling a lane that reports `need_tool` or hits a capability it cannot reach (MCP, browser, simulator, an OAuth'd service, or a verification its sandbox cannot run), managing session cost or token spend, or running any multi-task build where the session is the architect.
+description: How this session decides between doing the work itself, handing it to a cross-vendor implementation lane, and getting an independent review. USE WHEN deciding whether a task is worth delegating, writing a spec for a subagent, choosing a lane, handling a codex quota failure or wall-clock timeout, or deciding whether a deliverable needs an independent review before you report done.
 ---
 
-# Orchestration — the architect's routing doctrine
+# Orchestration
 
-The session is the architect: it owns requirements, architecture, decomposition, specs, routing, and verification. It should almost never type implementation code. Every implementation task gets routed to the cheapest lane that is adequate for it — escalation to Fable is deliberate, per task, never a fixed binding — and every finished deliverable gets a Fable review before the architect reports done.
+You implement by default. You are the most capable model in this system and you
+already hold the conversation state; moving work out of the session costs a spec,
+a round trip, and a re-verification. Delegate when the delegation itself buys
+something you cannot get by typing the code yourself.
 
-## Cost discipline — the prime directive
+## The four reasons to delegate
 
-The economics of this pattern: Opus orchestrates (judgment-heavy, volume-light), GPT-5.6 Luna does the routine typing (volume-heavy, cheap, cross-vendor), and Fable — the most expensive model available — is spent only where it changes outcomes: the hardest one-off implementations and the final review. Three rules follow.
+Name one before you spawn. If you cannot name one, do the work.
 
-**Emit judgment, not volume.** The architect's output is decomposition, specs, routing decisions, verdicts on diffs, and short reports. It does not type implementation code, test bodies, boilerplate, or config files. A code block longer than an interface signature or a few illustrative lines is a spec that hasn't been delegated yet — stop and delegate it. Fixing a lane's bug by hand is the same failure in disguise: send a corrected spec back to the lane instead.
+1. **Cross-vendor independence.** You want the answer from a different model
+   family — a second implementation to compare, or a reviewer who did not write
+   the code.
+2. **Quota distribution.** The work is large and mechanical and the ChatGPT side
+   can absorb it, saving Claude quota for judgment.
+3. **Isolation or parallelism.** Several independent pieces can run at once, or
+   the work would flood this session with output you do not need to see.
+4. **Stronger review.** The deliverable is risky enough that a fresh reader is
+   worth a round trip. See *Review*.
 
-**Keep the context lean.** Everything in the architect's context is re-read at architect prices on every turn. Delegate broad exploration, codebase searches, and log-grepping to a cheap read-only agent and keep only the conclusions; read files yourself only when the decision genuinely depends on the exact code. Don't paste long files, full diffs, or verbose command output into the conversation when a path reference or an excerpt will do.
-
-**Reason once, then hand off.** Do the hard thinking — the architecture, the interface design, the debugging hypothesis — in one pass, capture it in the spec, and let the lane carry it from there. Re-deriving decisions across turns burns the premium twice.
-
-What stays with the architect regardless of cost: decomposition, interface design, hypothesis selection when debugging, spec writing, lane routing, and judging verification evidence. Those tokens are what the premium is for — everything else is a candidate for delegation.
+"It felt like it should be delegated" is not a reason. Neither is habit.
 
 ## The lanes
 
-| Lane | Producer | Invoke | Route here when |
-|---|---|---|---|
-| Routine | GPT-5.6 Luna (reasoning effort by task class — see Codex lane effort) | `codex-implementer` agent | The spec fully determines the outcome: boilerplate, wiring, CRUD, mechanical edits, straightforward features. **Default lane.** Requires the codex CLI. |
-| High-complexity | Fable 5 | `fable-implementer` agent | The outcome depends heavily on judgment the spec can't capture: subtle concurrency, non-trivial algorithms, security-sensitive paths, hard debugging, wide-blast-radius refactors — or the routine lane has already failed the task once. One-off escalations, never the default. |
-| Floor | Claude Haiku 4.5 | `claude-committer` agent | Mechanical, fully-determined edits below the codex spawn floor but too repetitive for the architect's own context: bulk renames, import fixes, applying one known pattern across many files. Nothing that requires a decision. |
-| Failover | Claude Sonnet 5, `effort: high` pinned | `failover-implementer` agent | Not selected by task class — the sole fixed target when codex itself returns `unavailable`, rate-limit, or quota-exhausted. A `timeout` does not come here — it resumes in the codex lane, see The wall clock. Never `claude-committer`, never `fable-implementer`. See Quota failover below. |
-| Tool bridge | Claude Haiku 4.5 (`model: sonnet` for multi-step work) | `tool-bridge` agent | Not an implementation lane. A lane hit a capability it cannot reach — MCP, browser control, the simulator, an OAuth'd connector, image inspection, or a verification its sandbox cannot run. The bridge performs the tool operation only; the lane that asked resumes. See The tool handoff below. |
-| Review | Fable 5 | `fable-advisor` agent | Not an implementation lane. Commitment boundaries and the mandatory end-of-deliverable review — see below. |
-
-Deciding rule: how much does the outcome depend on judgment the spec can't capture? Little → the default codex lane; you will verify anyway. A lot, and mistakes are costly → escalate to `fable-implementer`, or keep that piece with the architect. A routine-lane task that fails its spec once gets a corrected spec; twice, it escalates to Fable — repetition is evidence the task was misclassified.
-
-The codex lane is also the cross-vendor half of the pattern: its output comes from a non-Anthropic family, so the Claude architect's verification and the Fable review are genuine cross-vendor checks, not same-family self-review.
-
-If the codex lane returns `unavailable`, re-route the same spec to `failover-implementer` — see Quota failover below for why this is a fixed, pinned-effort target rather than the class-dependent Fable escalation — and say so explicitly in your report; never quietly absorb the substitution or the cost change. A `timeout` is not one of these: it means codex was working and ran out of clock, and it resumes in the same lane — see The wall clock below.
-
-## Task classes and the Claude-side exceptions
-
-This session runs a Claude subscription and a ChatGPT subscription side by side, and the Claude side is the scarcer of the two: the architect burns it on every turn just by thinking. So the default is inverted from "use the cheap lane when it obviously wins" to **codex by default; keep work on the Claude side only when Claude obviously wins**. Classify each task, then check the exceptions — the classification is a label, not a permission to skip the check.
-
-| Class | What it is | Default |
+| Lane | Model | Use for |
 |---|---|---|
-| `commit` | Trivial edits: typo, one-line fix, version bump, config value | codex — unless exception 2 |
-| `implement` | Code that a complete spec fully determines | codex (`codex-implementer`) |
-| `explore` | Open-ended search: where does X live, how does Y work | codex — unless exception 1 or 2 |
-| `ingest` | Reading long material: logs, dumps, docs, transcripts | codex. Never route here for context economy reasons alone — high token volume is exactly what the ChatGPT side is for |
-| `review` | Adversarial checking of a diff or design | codex first (independent family), then `fable-advisor` as the final gate |
-| `hardest` | Judgment-dominated work, or a task the routine lane already failed twice | `fable-implementer` — the one class that is Claude-side by default |
+| `codex-implementer` | GPT via `codex exec` | Cross-vendor implementation and quota distribution. Well-specified work whose outcome a spec fully determines. |
+| `implementer` | you choose per spawn: `haiku`, `sonnet`, or `fable` | Claude-side implementation you want out of this session — bulk mechanical edits (`haiku`), the codex quota failover target (`sonnet`), judgment-heavy one-offs (`fable`). |
+| `fable-advisor` | Fable 5 | Independent review and second opinions. Advises only — it holds no write tools. |
 
-### Codex lane effort
+Set the model on the spawn itself; it outranks the agent file's frontmatter.
+One implementer file, three depths — do not add per-model agent files.
 
-The codex lane ran pinned at `max` until 2026-08-10. The ledger never showed that pin preventing a failure: across 59 successful `implement` runs and 6 spec-retries, the retries traced to spec gaps, sandbox reach, and one procedural miss — not one of them to reasoning depth. A depth setting that costs latency on every call and has no measured save is not a default — so effort is now set per class, and `max` has to be earned.
+## Writing a spec
 
-| Class | Effort | Why |
-|---|---|---|
-| `implement` | `high` | The default. The spec determines the outcome and the architect verifies afterwards; depth past `high` buys wall clock, not correctness |
-| `implement`, exceptional | `max` | Only when one holds: **(a)** the change spans three or more files, **(b)** the spec leaves a *local* shape to the lane — an internal helper's signature, an error type — or **(c)** it is the retry attempt itself (`attempts` = 2) after a `spec-retry` |
-| `commit` | `low` | The spec names the change literally. Rare in this lane anyway — exception 2 keeps almost all of this class in-session |
-| `explore` | `medium` | The output is a location report, and the architect can check it against the tree cheaply |
-| `ingest` | `medium` | The failure mode is missing something. That is context coverage, and reasoning depth does not fix it |
+Five parts. Anything you leave out, the lane will invent.
 
-Any class not listed — `review` sent to codex for an independent-family read — takes the default `high`.
+1. **Objective** — what must be true when this is done.
+2. **Files** — every path it may touch. It touches nothing else.
+3. **Interfaces** — signatures, types, and call sites it must match.
+4. **Constraints** — what it must not change, plus the boilerplate below.
+5. **Verification** — the exact command that proves the objective, and the
+   expected result. Not "run the tests" — the command.
 
-(b) is not a licence to defer design. A public API shape, a schema, or a cross-module boundary stays architect work — a spec you couldn't finish is an unmade decision, not a `max` task. (b) covers only the shapes that are genuinely internal to the change being delegated.
+Every codex-lane spec carries these two paragraphs verbatim. The first prevents
+a lane from re-delegating and timing out with nothing to show. The second exists
+because a lane once ran `git checkout HEAD` and destroyed another lane's
+uncommitted work.
 
-Name the value on an `EFFORT:` line next to the five-part spec; the lane runs `high` when the line is absent. **When you use `max`, name which of (a)/(b)/(c) applies**, in the prompt and in the ledger `note`, the same way a Claude-side exception gets a number. "This one looks hard" is not one of the three.
+> Do not re-delegate to a subagent. This session implements the work directly.
 
-Calibrate at 20 `implement` runs at `high`: if no spec-retry in that window has reasoning depth as its cause, tighten the `max` conditions further; if two or more do, move the default back up and record which condition was missing.
+> The working tree may contain another lane's in-progress uncommitted work. It is
+> not yours; do not tidy it. Never run a git command that discards uncommitted
+> work — `checkout`, `restore` (except bare `--staged`), `reset --hard|--merge|--keep`,
+> `clean -f|-d|-x`, `stash`, `switch -f`, `rm -f`. To undo your own edit, write
+> back the content you read before editing. If you believe the tree genuinely
+> needs a reset, do not do it — report `STATUS: blocked` and let the caller
+> decide. Do not touch files not listed in Files.
 
-### The five exceptions — keep it on the Claude side only when one applies
+## What a lane returns
 
-1. **Context-bound.** The task depends on conversation state — decisions made, paths already ruled out, "the thing we just changed". Writing a self-contained five-part spec would cost more than doing the work. Delegating here doesn't save money, it launders context loss into a bad diff.
-2. **Below the spawn floor.** A codex round trip on this machine costs **11–25 s before the model does any work at all**, and ~6–9 k tokens for a no-op. If the architect is confident it can finish in about that time, the round trip is pure latency. Measured 2026-08-01 on codex 0.146.0: 11 s (`--ignore-user-config`, low effort), 24 s (user config, high effort), 86 s for a one-line fix end to end.
-3. **Judgment-dominated** — the `hardest` class. Subtle concurrency, security-sensitive paths, non-trivial algorithms, or a spec the routine lane has now failed twice. Re-sending a misclassified task to codex is a third failure with extra steps.
-4. **The final review gate.** `fable-advisor` reads the deliverable with fresh eyes. This never moves.
-5. **Claude-only tooling — and it licenses the tool operation, not the implementation.** The work needs MCP servers, browser control, the iOS simulator, an OAuth'd connector, or anything else reachable from this session but not from `codex exec`. Route the tool work to `tool-bridge` and return the result to the lane that asked; the implementation never changes hands. Two things look like this exception and are not:
-   - **The harness's subagent policy.** "This session may not spawn agents" is never evidence of a capability gap — and the bridge is itself a subagent, so treating it as exception 5 takes the whole pattern offline in one move. Standing permission from the user does not settle it either, in either direction: the only thing that settles it is an attempted spawn. See **Delegation availability is not a judgment call** below, and log it there — never as exception 5.
-   - **Codex sandbox reach.** A service on a local port, a path outside the workspace, a directory that is not a git repo, a live runtime config, or something `--ignore-user-config` removed. That is codex-side configuration, and the fix is in the invocation or in a bridged verification — not in the architect writing the code. See Capability triage.
+`STATUS` (success | blocked | need_tool) · `OBJECTIVE` restated · `CHANGES` by
+file · `VERIFIED` with the command and its actual output · `GAPS` — anything it
+could not do or could not check. A lane that reports success without pasting real
+command output has not verified anything; treat it as `blocked`.
 
-None of these apply? It goes to codex. "It felt faster to just do it" is exception 2 only if the architect can name the number.
+A lane that finishes with an empty diff has failed. Re-issue it; do not accept it.
 
-### Delegation availability is not a judgment call
+## Failure handling
 
-Every exception above assumes the architect *chose* to keep the work. Being unable to delegate at all is not a choice and not an exception — it is a fault, and in this ledger it is the single largest source of in-session implementation. Two rules:
-
-**Attempt the spawn.** A sentence in the harness, a policy remembered from another session, or the absence of an explicit user request is not evidence that delegation is unavailable. The only evidence is an attempted spawn that came back a hard error. Do not infer the answer — call the tool and read what it returns.
-
-**Quote the error.** When a spawn genuinely fails, log `lane: "architect"` with `exception: "delegation-unavailable"` — a string, deliberately not a number, because it does not belong in the same population as the five exceptions and must never dilute their calibration. Put the verbatim error in `note`. An entry that cannot quote an error was an inference, and the next retro reads it as one.
-
-### Missing capability is not a change of owner
-
-> **Missing capability causes a tool handoff, not an implementation handoff.**
->
-> **Tool access does not grant implementation ownership.**
->
-> **The architect MUST NOT continue implementation merely because the delegated implementer cannot access a required tool.**
-
-This is the exact failure the bridge exists to prevent: codex hits a Claude-only tool, the architect runs the tool because only it can, and — already holding the result — types the rest of the diff. The capability gap was two minutes of tool work; the ownership transfer costs the whole remaining task at architect prices. The same rule binds every other lane: `tool-bridge` does not finish an implementation it unblocked, and `fable-advisor` never stops advising to start writing.
-
-### Capability triage — three questions, in order
-
-Before anything gets bridged, establish that the capability is genuinely unreachable from the implementer. **A codex subprocess that is merely under-configured is not a Claude-only tool.**
-
-1. **Can codex reach it directly?** Check MCP availability, network access, `PATH` and `HOME`, environment variables, CLI credentials, OAuth or session dependence, and sandbox scope — and check whether the lane's own `--ignore-user-config` is what removed the tool. Fix the invocation and the task never leaves the lane. If the task genuinely needs the user's codex config or MCP servers, that is a spec-level decision for the architect, not a bridge.
-2. **Can `tool-bridge` do it?** OAuth'd sessions, MCP servers, browser control, the simulator, image inspection — and any verification the codex sandbox cannot run: a local database, a dev server, a browser flow.
-3. **Only then, the architect** — and even here the architect performs the tool operation and hands the result back, under the rule above.
-
-### Quota failover
-
-The two subscriptions have independent limits, and codex-by-default means the ChatGPT side is now the one that gets drained first. When codex returns a rate-limit, quota, or `unavailable` error, re-route the same spec to `failover-implementer` — a dedicated agent with `model: sonnet` and `effort: high` pinned in its own frontmatter. That pin is deliberate: this lane's effort is fixed and does not inherit, track, or get pulled up/down by whatever the architect's own session effort is set to (see Architect effort below) — it is always exactly `high`, independent of session state. It is a single fixed target: never a choice between `claude-committer` and `fable-implementer` by task class, and never Fable — Fable stays reserved for deliberate `hardest`-class escalation and the final review. **Say so in the report** — a silent failover turns a routing policy into a cost surprise. If the failover fires more than once in a session, stop and tell the user which side is exhausted; the correct fix is a routing decision, not more retries. Timeouts do not fail over — see The wall clock.
-
-### The tool handoff
-
-A lane that hits an unreachable capability returns `STATUS: need_tool` with a `TOOL REQUEST` block instead of failing, guessing, or handing the task back. The architect judges the request — is it real, or is it triage step 1? — spawns `tool-bridge`, and returns the result to **the same lane**.
-
-```
-codex → need_tool → tool-bridge → structured result → codex resumes
-```
-
-Two statuses, no more. `need_tool`: the lane can continue once a tool operation is done for it. `blocked`: no available capability finishes this and a decision is needed. Approval is already covered — the codex lane runs `approval_policy="never"` inside a `workspace-write` sandbox, so anything requiring approval surfaces as a refused or failed action and the existing approval rules decide it.
-
-Distinguish the handoff from failover, which looks similar and is not:
-
-| Trigger | Route |
+| What happened | What to do |
 |---|---|
-| Codex is unavailable, rate-limited, quota-exhausted | `failover-implementer` — **implementation moves**. See Quota failover above |
-| Codex ran out of wall clock with work in progress | resume the **same** codex lane with a fresh invocation carrying the `RESUME` block — see The wall clock |
-| Codex is fine but cannot reach a tool or a verification target | `tool-bridge` — **only the tool operation moves**; implementation ownership does not |
+| Codex unavailable, rate-limited, or quota-exhausted | Implementation moves: respawn as `implementer` with `model: sonnet`. |
+| Codex ran out of wall clock with work in progress | Do **not** move lanes. Respawn the same lane with a `RESUME` block naming what landed and what remains. |
+| Codex cannot reach a tool or a verification target | Run that one operation yourself, hand the result back, and let the lane keep the implementation. A capability gap is not a change of owner. |
+| Same task failed twice in the same lane | Stop retrying. Either implement it yourself or escalate to `implementer` with `model: fable`. |
 
-A tool gap is never a reason to move a task to `failover-implementer`, to `fable-implementer`, or to the architect.
+**Wall clock.** A lane has a bounded budget and cannot ask for more mid-run. Size
+the spec to finish inside it. If a task plausibly exceeds it, split it at a point
+where the first half is independently verifiable.
 
-**Resuming.** Do not use `codex exec resume` — it silently re-resolves the model unless `--model` is passed again, so a resumed run can come back from a different model than the one you routed to. Send a fresh invocation whose spec carries six things and nothing else: objective, current progress, the relevant diff and files, the tool result, remaining work, verification. Claude-side tool transcripts do not travel; the bridge's structured result does.
+**Preflight.** Before routing to codex, confirm the CLI actually responds —
+`codex exec` with a trivial prompt and a timeout. `codex --version` and
+`codex --help` are known to hang on some builds, so a hang there means nothing;
+only treat codex as unavailable if `codex exec` itself fails.
 
-**Verification by proxy.** The commoner shape is not a missing fact but a verification the sandbox cannot run — a local database, a dev server, a browser flow, a visual check on an image. The bridge runs the verification and returns the evidence; a failure goes back to the lane as a corrected spec. The architect *judging* that evidence is verification. The architect *fixing the code* because it already has the evidence in hand is the ownership transfer this section forbids.
+## Review
 
-**When the bridge fails.** `STATUS: blocked` is a stopping point, not a licence to implement. Options, in order: an alternative capability (a different tool, a different verification path), a reduced scope the lane can finish without it, or escalation to the user. The architect does not quietly start writing the remainder.
+Reviews are worth their cost on risky deliverables and are waste on small ones.
+Match the review to the blast radius.
 
-### The wall clock
+| Deliverable | Review |
+|---|---|
+| One file, mechanical, verified by a passing command | None. Your own verification is the review. |
+| Ordinary feature or fix | Your own verification, plus a re-read of the diff. |
+| Wide blast radius, security-sensitive, data migration, API or schema change, concurrency | `fable-advisor`. |
+| Irreversible, or you and a lane disagree | `fable-advisor`, and consider a second independent implementation to compare. |
 
-The codex lane runs under two nested clocks: `gtimeout -k 10 570` around codex itself, inside a Bash call carrying `timeout: 600000`. The inner one must stay strictly shorter, because the outer starts first — at equal values the tool kills the call before `gtimeout` fires, and the lane never produces a `STATUS: timeout` at all. The outer bound is the Bash tool's configured maximum (600000 ms as this harness ships), so raising the inner cap past it buys nothing: the kill just moves outward, taking codex's exit status, its stderr, and the lane's chance to read the handoff in the same call with it.
+Also consult it *before* committing to an architectural decision you would find
+expensive to reverse, and whenever the same problem has resisted two attempts.
 
-The budget is therefore fixed, and the only way to get more of it is a second invocation the architect makes. Two consequences follow.
+**The silence gap.** Before a review, compute what the change *should* have
+touched — callers, subclasses, parallel implementations, adjacent config — and
+subtract what the diff *did* touch. Hand the difference to the reviewer as paths
+to check. This finds defects of omission, which reading the diff cannot: a diff
+shows what changed, never what should have changed and didn't.
 
-**Lanes never sub-delegate to buy time.** A sub-run shares the parent's clock: delegating at t=500 hands the child what is left minus its own startup, and the handoff is the first thing the kill destroys. Measured 2026-08-29 — two runs re-delegated near the deadline and returned zero artifacts. The lane's own instructions forbid it, and the mechanism that replaces it is `.codex-handoff.md`: progress kept on disk, where a SIGTERM cannot reach it.
-
-**A timeout is a resume, not a failover.** `STATUS: timeout` means codex was working and ran out of clock — the diff on disk and the `RESUME` block are real progress, from the model you routed to. Send a fresh codex invocation — never `codex exec resume`, per Resuming above — carrying the same six things that section names, with the `RESUME` block filling the progress slot in place of a tool result. It must also re-carry the lane's spec instructions verbatim, the no-delegate line and the handoff file among them; a resume that drops them re-opens on the second clock exactly the failure the first one taught you about. `failover-implementer` is for `unavailable`, rate limits, and quota, where the lane itself will not run; sending a timeout there discards finished work and restarts the task on a different model for no reason.
-
-Only when a resumed run times out again is the task genuinely too big for one lane, and then the fix is decomposition, not a different model. A task that needs more than one wall clock was under-decomposed — the handoff is the safety net, not the plan.
-
-### Architect effort
-
-The architect's own session effort is a separate knob from any lane's effort — raising or lowering it never touches `failover-implementer`'s pinned `effort: high`, or any other agent's frontmatter-pinned effort. Default to whatever the session started at (normally `high`). Ask the user to raise it to `xhigh` for one specific high-stakes judgment call, not the whole session, when: the decision is architecturally hard to reverse (schema or API shape, a data-migration design), the exception classification itself is genuinely ambiguous rather than just unfamiliar, or a lane has already failed the same task twice and the architect is about to take it on directly. There is no in-session lever to do this automatically — Claude Code's effort control (`/effort`) is an interactive command the user runs, not something callable from a tool mid-session — so the architect's job is to name the moment and the reason, then drop back to the session default once the call is made.
-
-## The spec contract
-
-Implementers share none of your conversation context. Every delegation prompt carries all five parts:
-
-1. **Objective** — what to build or change, one paragraph
-2. **Files** — exact paths to create or modify
-3. **Interfaces** — signatures, types, or API shapes the code must match
-4. **Constraints** — project conventions, things not to touch
-5. **Verification** — the command(s) that prove it works
-
-For the codex lane, one routing line rides alongside the spec — `EFFORT: low|medium|high|max`, per Codex lane effort above. It is not a sixth spec part: the spec says what to build, the effort line says how deep the lane thinks about it.
-
-Every spec's Constraints (part 4) MUST also include the following working-tree boilerplate verbatim, every time. This is text the architect pastes into the spec's Constraints, not guidance for this skill's narrator:
-
-> The working tree may contain another lane's in-progress uncommitted work. It is not yours; do not clean it up. Never run a command that discards uncommitted work: `git checkout` (path-scoped, `HEAD`-scoped, with `--`, or `-f`), `git restore` (except `--staged` alone), `git reset --hard|--merge|--keep`, `git clean -f|-d|-x`, `git stash` (bare, `push`, `save`, `drop`, or `clear`), `git switch -f|--discard-changes`, or `git rm -f`. If you need to undo your own edit, write back the content you read before editing via Edit/Write. If you conclude the tree genuinely needs a reset or restore, do not run it; report `STATUS: blocked` instead. That decision belongs to the caller (the architect). Do not touch files outside the spec's listed Files.
-
-The spec's `Files` define the writable scope for the task, and the codex lane's sandbox working root (`--cd`) is derived from those paths. Broadening `Files` therefore broadens the sandbox scope as well.
-
-A spec you can't finish writing is a signal the decision isn't made yet — that's architect work, not a reason to hand the ambiguity to a cheaper model.
-
-## Context inheritance grades
-
-Inherited context is safe in proportion to how falsifiable it is. Four grades, in increasing order of what they carry and decreasing order of what the receiver can check:
-
-| Grade | Carries | Can the receiver falsify it? |
-|---|---|---|
-| `blind` | The artifact alone — the diff, the stated goal | Yes, completely |
-| `facts` | + tool-derived facts: impact set, test output, which lane produced the diff | Yes, by recomputing them |
-| `briefed` | + the producing agent's claims: "X is safe because Y", "that file is unrelated" | **No — unverified belief** |
-| `full` | + conversation state: options ruled out, decisions already made | No — path-dependent and unverifiable |
-
-**The deciding rule: producers inherit, judges are cut off — but a judge always gets the target and the criterion. What it must not inherit is the process.** A wrong prior costs a producer little, because verification comes after it. A wrong prior costs a judge everything, because removing the prior *is* the verification.
-
-When the grade isn't obvious, one test: **does this widen the receiver's attention or narrow it?** An impact set widens. "That file is unrelated" narrows. Widening inherits; narrowing does not.
-
-Defaults:
-
-- `codex-implementer`, `fable-implementer`, `claude-committer` → `facts`. The five-part spec is already a facts-grade payload; keep it that way.
-- `fable-advisor` at a commitment boundary → `facts`
-- `fable-advisor` at final review → `facts` on the first pass, `briefed` only on the reconcile pass (see below)
-- Work kept in-session under exception 1 → `full` by definition; that is what exception 1 *means*
-
-Record the grade in the ledger (`ctx`). Never raise the grade mid-task without first putting the lower-grade output on the record.
-
-### Passing an impact set without narrowing attention
-
-Whenever a spec or a review carries a tool-derived impact set, label it as a floor, not a ceiling:
-
-> Impact set (**the minimum to check, not the complete set**): …
-
-An over-predicting impact analysis is the right kind of wrong here. A tight one that misses a caller is the wrong kind.
-
-### Retries carry inverted claims, never the process
-
-A lane that failed once gets a corrected spec. The previous attempt is `briefed` material and must arrive polarity-inverted, or the next attempt inherits the same blind spot:
-
-> ✗ "The previous attempt tried solving this in the cache layer and the tests failed."
-> ✓ "The previous attempt *believed* the cache layer could solve this. That belief produced failure Y. Treat the premise as false."
-
-## Parallelism
-
-Independent specs (no shared files, no ordering dependency) launch as parallel agents in a single message. Sequential chains and single-file surgery stay serial. For high-stakes work, run `codex-implementer` and `fable-implementer` on the same spec and let the architect pick the stronger diff — two model families, one judged result.
-
-## Commitment boundaries and the final review
-
-Consult `fable-advisor` (read-only, verdict in under 300 words) at the moments that decide whether the next hour is wasted:
-
-- Before committing to an architecture, data migration, API shape, or refactor strategy
-- Whenever the same problem has resisted two distinct attempts
-- **Always, once, at the end of a deliverable** — the advisor reads the accumulated changes with fresh eyes, against the stated goal rather than the conversation, and returns ship / fix-first / rethink. The architect does not report done before this review.
-
-Pass it the decision (or, for final review, the diff and the stated goal), the constraints, and the options considered. Act on the verdict or surface the disagreement — never silently ignore it.
-
-One honest caveat: when the deliverable came from `fable-implementer`, the reviewer and the implementer are the same model. The final review is still worth it — it reads the diff in a clean context, against the goal rather than the conversation — but it is a fresh-eyes check there, not an independent-model check. Cross-vendor independence comes from the codex lane.
-
-### The final review runs in two passes
-
-Independence comes from ordering, not isolation. The reviewer can have both a clean read *and* the implementer's claims — as long as the clean read is on the record first.
-
-1. **Pass 1 — `facts`.** Spawn `fable-advisor` with the diff, the stated goal, the constraints, the *name* of the lane that produced it, and the silence gap (below). No implementer report, no conversation. It returns a **numbered findings list** and a verdict.
-2. **Pass 2 — `briefed`.** Continue the *same* agent with `SendMessage`, handing it the implementer's claims as a falsification list, not as background. It answers two questions only: which numbered findings die, and which claims now look doubtful. **A finding may be withdrawn only against named file:line evidence — "the implementer says it's handled" is not evidence.**
-
-Pass 2 is short: same agent, same context, nothing to re-read. It costs a fraction of a second review, and pass 1 cannot be retro-edited by what pass 2 reveals.
-
-If your harness can't continue a finished subagent, spawn pass 2 fresh and paste the pass-1 findings back verbatim. What makes this work is that the clean read is already fixed in writing — not that it lives in the same context.
-
-The lane's *identity* is a fact and travels in pass 1. The lane's *report* is a claim and waits for pass 2.
-
-### The silence gap
-
-The most dangerous thing a summary carries is what it silently omits: the implementer never considered concurrency, so its report contains no concurrency, so the reviewer's attention never goes there. A summary cannot report its own blind spots — so construct them:
-
-```
-impact set   = changed files ∪ their callers, dependents, and covering tests
-               (any structural query that resolves symbols across the repo:
-                a call-graph or code-intelligence MCP, an LSP, or grep on the
-                changed symbol names — the source doesn't matter, the coverage does)
-mentioned    = files in the diff ∪ files the implementer's report names
-silence gap  = impact set − mentioned
-```
-
-Files structurally inside the blast radius that no agent has said one word about. That is the reviewer's priority queue, and it is anchor-free by construction: it came from the code, not from anyone's account of the code.
-
-`fable-advisor` has `Read, Grep, Glob` and no Bash or MCP — **the architect computes the gap and passes the paths**; the advisor reads those files itself. An empty gap is a result worth stating in pass 1, not a step to skip.
-
-### When the advisor lane is unavailable
-
-A `fable-advisor` spawn that dies on an API error — a safeguard rejection, a quota exhaustion, a rate limit — is a lane failure, not a completed review. Retry once. If it fails the same way, re-spawn the same agent with an explicit `model: opus` override and run the identical pass-1 prompt: the review still happens, it just loses cross-model independence, and that loss belongs in the report. Log `lane: "fable-advisor"`, `outcome: "failover"`, with the verbatim error in `note`.
-
-The option that does not exist is reporting done with no review. A gate that could not be spawned is still a gate. If a deliverable ever ships without one, the ledger entry is `outcome: "blocked"` and it reads as an incident, not as a completed task.
+**Two passes.** Give the reviewer the diff, the goal, and the gap paths — and
+nothing about what the implementer claims. Collect its findings. Only then send
+the implementer's claims and ask which findings survive. A reviewer that reads
+the claims first inherits the implementer's blind spots; a reviewer that reads
+them second can catch a claim that is not true.
 
 ## Verification
 
-Reports are claims, not evidence. Before accepting any lane's work: read the diff, and re-run the verification command (or spot-check its quoted output against the working tree). "Should work", "tests should pass", or a report with no command output means the task is not done. A lane that reports a spec gap gets a corrected spec, not a "use your judgment".
+You own acceptance. A lane's verification is evidence, not proof — re-run the
+command yourself when the deliverable matters. Never report done on a lane's
+word alone.
 
-## Routing ledger
+## Ledger (optional)
 
-Every routing decision is a data point for tuning this doctrine — the spawn floor, the exception boundaries, and the failover frequency are all calibrated from it. The architect appends one JSON line to `~/.claude/fable-advisor/routing.jsonl` (outside this public repo — ledger entries contain task details and must never be committed here) at each of these moments:
-
-- a delegated task reaches its final outcome (verified, escalated, or abandoned)
-- a task is **kept in-session via an exception** — these entries are what calibrate exceptions 1, 2, and 5
-- a failover fires (quota, rate limit, `unavailable`)
-- a lane times out and is resumed
-
-Fields:
+One JSON line per routing decision, appended to
+`~/.claude/fable-advisor/routing.jsonl`:
 
 ```json
-{"ts":"<ISO8601>","task":"<short label>","class":"commit|implement|explore|ingest|review|hardest","lane":"codex-implementer|fable-implementer|claude-committer|tool-bridge|fable-advisor|architect","exception":null,"ctx":"blind|facts|briefed|full|facts→briefed","effort":"low|medium|high|max","outcome":"success|spec-retry|escalated|failover|blocked|abandoned","attempts":1,"duration_s":90,"note":""}
+{"ts":"<iso8601>","task":"<short>","class":"implement|review|explore|commit","lane":"<lane>","reason":"<one of the four, or 'self'>","outcome":"success|retry|failover|blocked","attempts":1,"duration_s":0,"note":"<what you learned>"}
 ```
 
-- `lane: "architect"` with `exception: 1–5` records work kept in-session; `duration_s` is the actual time it took, so exception-2 claims are checkable against the spawn floor.
-- `exception: "delegation-unavailable"` is the one non-numeric value, and it is not an exception: it records that spawning a lane actually failed, with the verbatim error in `note`. Keep it out of every statistic computed over exceptions 1–5. Audit it by reading `note`: no quoted error means the architect inferred unavailability instead of testing it — the failure mode described in Delegation availability is not a judgment call.
-- `lane: "tool-bridge"` records a tool handoff. Put `bridge_model=haiku|sonnet` in `note`, plus `escalated=yes` when a simple-mode run had to be re-spawned in multi-step mode. `class` stays the class of the task that asked — the bridge owns no task of its own. A bridge line never carries `outcome: "escalated"`; that value means implementation moved to `fable-implementer`, which a tool handoff never does. `outcome: "blocked"` means no capability finished it and the decision went upstream. With the bridge in place an `exception: 5` line should become rare: a genuine tool gap now logs a `tool-bridge` line instead of an architect one.
-- `effort` is the codex reasoning effort the lane actually ran with, `null` for every non-codex lane. It exists so the next retro can answer the question the old `max` pin was set without: did a `high` run ever fail in a way more depth would have caught?
-- `ctx` is the context inheritance grade that was actually passed. A two-pass final review logs `"facts→briefed"`.
-- `outcome: "spec-retry"` means the lane failed once and got a corrected spec; put the one-line cause of the spec gap in `note`. `"escalated"` means it moved to `fable-implementer`; `"failover"` means quota/availability re-routing (name the direction in `note`).
-- A lane that timed out and was resumed logs one line for the task, with `attempts` incremented and the timeout named in `note`. It is not a `failover` and needs no new `outcome` value — the work never left the lane.
-- `attempts` counts spec submissions to the final lane; `duration_s` is a rough wall-clock estimate, not a stopwatch reading.
-
-Append with a plain shell redirect — no jq, no wrapper script:
-
-```bash
-echo '{"ts":"2026-08-01T10:00:00+09:00","task":"add retry to sync client","class":"implement","lane":"codex-implementer","exception":null,"ctx":"facts","effort":"high","outcome":"success","attempts":1,"duration_s":180,"note":""}' >> ~/.claude/fable-advisor/routing.jsonl
-```
-
-Logging is part of finishing the task, not optional telemetry — an unlogged delegation is invisible to the next retro. But keep it to one line per outcome; the ledger records decisions, not narration.
-
-### Calibration: when to split the tool bridge
-
-`tool-bridge` is one agent at two depths — Haiku by default, `model: sonnet` for browser driving, multi-MCP investigation, OAuth'd services, and tool-error recovery. Splitting it into two lanes is a decision for data, not for taste.
-
-**Review at 10 `tool-bridge` lines.** If three or more started in simple mode and had to be re-spawned in multi-step mode, the depth is not obvious at spawn time and the two modes should become two agents. If bridge lines are still in single digits by 2026-09-30, the volume does not justify a second lane either way — and if `exception: 5` architect lines still outnumber bridge lines in that window, the problem was never the lane count: it is that the handoff is not being taken.
-
-## Calibration: when to retire the two-pass review
-
-The two-pass review and the silence gap earn their cost only if anchoring actually happens. Decide that from the ledger, not from impression — and decide it on a date, or the machinery outlives its justification by default.
-
-Count only **substantive deliverables**: a diff touching three or more files, or any non-trivial logic change. A one-line fix can never produce an anchoring event and must not dilute the sample.
-
-A final review logs one line, with the review-specific counters in place of `duration_s` detail:
-
-```json
-{"ts":"…","task":"…","class":"review","lane":"fable-advisor","exception":4,"ctx":"facts→briefed","effort":null,"outcome":"success","attempts":1,"duration_s":120,"note":"p1=4 killed_ev=1 killed_assert=0 gap=3 gap_hit=1 verdict_changed=no"}
-```
-
-- `p1` — findings returned by pass 1
-- `killed_ev` — pass-1 findings withdrawn against named evidence
-- `killed_assert` — pass-1 findings the advisor tried to withdraw on the implementer's word alone. **This is the anchoring event.** Any non-zero value is the mechanism catching exactly what it exists for
-- `gap` / `gap_hit` — silence gap size, and how many real defects were found inside it
-- `verdict_changed` — whether pass 2 moved ship / fix-first / rethink
-
-**Review at 10 substantive deliverables or 2026-09-30, whichever comes first.**
-
-Two-pass review — read the two kill columns together, not separately:
-
-| `killed_ev` | `killed_assert` | Read as | Action |
-|---|---|---|---|
-| ~0 | 0 | Pass 2 changes nothing in either direction | **Retire it.** Collapse to a single `facts` pass — note the collapse is to facts-only, *not* back to a briefed single pass: zero on both columns means the claims were not informative either |
-| >0 | 0 | The claims are honest and useful; pass 2 is killing false positives | Keep — it is paying for itself in reviewer precision |
-| any | >0 | Anchoring is real and was caught | Keep, and stop re-litigating this |
-
-Silence gap — an empty gap and a noisy gap both argue for retirement, but they have different fixes:
-
-| Observation over 10 | Read as | Action |
-|---|---|---|
-| Gap nearly always empty | Implementers already cover their own blast radius | Retire the computation; the reports are doing the job |
-| Gap large, `gap_hit` stays 0 | The impact query is producing noise, not attention | Tighten the query first; retire only if a tighter query still finds nothing |
-| `gap_hit` > 0 even occasionally | It is finding what summaries hide | Keep — it is the cheaper half of the mechanism |
-
-If both retire, one thing survives and costs nothing to follow: implementers get `facts`; judges get the target and the criterion and never the process.
+Its only purpose is to let you answer "is this routing policy actually working?"
+with numbers instead of impressions. If you are not going to read it, do not
+write it.
