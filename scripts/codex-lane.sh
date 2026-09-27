@@ -24,9 +24,11 @@
 # exit:   0 ok · 1 empty diff · 3 codex unavailable (missing, auth, quota, model
 #         access) · 4 timeout · 5 bad usage/blocked
 #
-# With --route-id, every run — whichever exit it takes — appends an "attempt"
-# row to the routing ledger (status, rc, duration, model, effort, touched,
-# scope violations), so outcome data accumulates without anyone remembering.
+# Every run — whichever exit it takes — appends an "attempt" row to the routing
+# ledger (status, rc, duration, model, effort, touched, scope violations), so
+# outcome data accumulates without anyone remembering. With --route-id the row
+# joins its routing decision; without one it is recorded as "unrouted", which is
+# how routing-report.py measures how often the router was skipped.
 set -euo pipefail
 SECONDS=0
 
@@ -55,10 +57,12 @@ esac
 # LANE_STATUS is set just before each deliberate exit; anything else is derived
 # from the exit code. Recording never changes the lane's own exit status, and a
 # missing python3 or an unwritable ledger only costs the row.
-LANE_STATUS="" N_TOUCHED="" N_VIOL="" WHY=""
+LANE_STATUS="" N_TOUCHED="" N_VIOL="" WHY="" UNROUTED=""
+if [ -z "$ROUTE_ID" ]; then
+  ROUTE_ID="unrouted-$(date +%s)-$$" UNROUTED=1
+fi
 record_attempt() {
   local rc=$1 status=$LANE_STATUS
-  [ -n "$ROUTE_ID" ] || return 0
   if [ -z "$status" ]; then
     case "$rc" in 0) status=ok ;; 1) status=empty_diff ;; 3) status=unavailable ;;
                   4) status=timeout ;; 5) status=blocked ;; *) status=error ;; esac
@@ -66,7 +70,7 @@ record_attempt() {
   python3 "$here/fable-route.py" attempt --id "$ROUTE_ID" --lane-status "$status" \
     --rc "$rc" --duration "$SECONDS" --model "$MODEL" --effort "$EFFORT" \
     ${N_TOUCHED:+--touched "$N_TOUCHED"} ${N_VIOL:+--violations "$N_VIOL"} \
-    ${WHY:+--reason "$WHY"} >/dev/null 2>&1 || true
+    ${WHY:+--reason "$WHY"} ${UNROUTED:+--unrouted} >/dev/null 2>&1 || true
 }
 trap 'record_attempt $?' EXIT
 [ -f "$SPEC" ] || { echo "--spec must be a readable file" >&2; exit 5; }

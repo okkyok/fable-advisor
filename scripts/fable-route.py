@@ -410,7 +410,8 @@ def cmd_attempt(args):
               "lane_status": args.lane_status, "rc": args.rc, "duration_s": args.duration,
               "model": args.model, "effort": args.effort, "touched": args.touched,
               "scope_violations": args.violations,
-              "reason": args.reason[:200] if args.reason else None}
+              "reason": args.reason[:200] if args.reason else None,
+              "unrouted": True if args.unrouted else None}
     append(record)
     emit(record)
 
@@ -486,6 +487,7 @@ def main(argv=None):
     a.add_argument("--touched", type=int, default=None)
     a.add_argument("--violations", type=int, default=None)
     a.add_argument("--reason", default=None)
+    a.add_argument("--unrouted", action="store_true", help="the lane ran without a route id")
     sub.add_parser("config", help="print the effective configuration")
     args = parser.parse_args(argv)
     try:

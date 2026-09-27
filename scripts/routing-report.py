@@ -158,6 +158,27 @@ def report(rows):
         "n": len(v), "first_try_ok": rate(sum(1 for r in v if r[0].get("lane_status") == "ok"), len(v)),
         "avg_attempts": mean([len(r) for r in v])} for k, v in sorted(shadow_lane.items())}
 
+    # Compliance: is the measurement itself trustworthy? Every lane run is logged
+    # mechanically; these rates show how often the manual steps were skipped.
+    decision_ids = {d["id"] for d in decisions if text(d.get("id"))}
+    runs = [r for r in rows if r.get("event") == "attempt" and text(r.get("id"))]
+    routed_runs = [r for r in runs if r["id"] in decision_ids]
+    codex = [d for d in decisions if d.get("lane") == "codex-implementer" and text(d.get("id"))]
+    claude = [d for d in decisions if d.get("lane") in ("implementer", "self") and text(d.get("id"))]
+    open_decisions = [d for d in decisions if text(d.get("id")) and d["id"] not in outcomes]
+    out["compliance"] = {
+        "lane_runs": len(runs),
+        "routed_lane_run_rate": rate(len(routed_runs), len(runs)),
+        "unrouted_lane_runs": sum(1 for r in runs if r.get("unrouted") is True),
+        "codex_decisions_without_lane_run": sum(1 for d in codex if d["id"] not in attempts),
+        "outcome_rate": rate(len(decisions) - len(open_decisions), len(decisions)),
+        "outcome_rate_codex_routes": rate(sum(1 for d in codex if d["id"] in outcomes), len(codex)),
+        "outcome_rate_claude_routes": rate(sum(1 for d in claude if d["id"] in outcomes), len(claude)),
+        "reviews_linked_to_a_decision": rate(sum(1 for r in reviews if text(r.get("id")) in decision_ids), len(reviews)),
+        "open_decisions_recent": ["%s %s %s" % (d["id"], d.get("ts", ""), str(d.get("task") or "")[:40])
+                                  for d in open_decisions[-5:]],
+    }
+
     review_dist = Counter(text(r.get("review")) for r in reviews)
     out["review"] = {"total": len(reviews), "distribution": dict(review_dist),
                      "fable_review_rate": rate(review_dist.get("fable_review", 0), len(reviews)),

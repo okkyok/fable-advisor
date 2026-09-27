@@ -9,7 +9,7 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 S="$ROOT/scripts"
 T=$(mktemp -d "${TMPDIR:-/tmp}/fable-tests.XXXXXX")
-trap 'rm -rf "$T"' EXIT
+trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT   # KEEP=1 keeps the scratch ledger for inspection
 export TMPDIR="$T/tmp"; mkdir -p "$TMPDIR"   # lane worktrees land inside $T and go with it
 pass=0 fail=0
 ok() { pass=$((pass + 1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
@@ -277,7 +277,8 @@ out=$(FABLE_LEDGER=off "$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.p
 check "ledger off: the lane still runs and writes no row" '[ $rc -eq 0 ] && [ "$(wc -l < "$FABLE_LEDGER")" -eq "$n" ]' "$out"
 discard "$out"
 out=$(PATH="$BASE" "$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" 2>/dev/null); rc=$?
-check "without --route-id nothing is recorded" '[ $rc -eq 3 ] && [ "$(wc -l < "$FABLE_LEDGER")" -eq "$n" ]'
+u=$(tail -n 1 "$FABLE_LEDGER")
+check "without --route-id the run is still recorded, as unrouted" '[ $rc -eq 3 ] && [ "$(field "$u" unrouted)" = True ] && [ "$(field "$u" event)" = attempt ] && grep -q "^unrouted-" <<<"$(field "$u" id)"' "$u"
 o=$(python3 "$S/fable-route.py" outcome --id "$rid" --outcome success)
 check "outcome fills attempts and duration from lane rows" '[ "$(field "$o" attempts)" = 4 ] && [ -n "$(field "$o" duration_s)" ]' "$o"
 rep=$(python3 "$S/routing-report.py" --json)
@@ -285,6 +286,12 @@ check "report shows lane attempts per route and shadow disagreements from lanes"
 import json,sys; d=json.loads(sys.argv[1]); l=d[\"lane_attempts\"][\"by_route\"][\"luna_high\"]
 assert l[\"n\"]>=1 and l[\"avg_attempts\"]>=1, l
 assert any(k.startswith(\"jev=luna_low ran=luna_high\") for k in d[\"shadow_disagreement_lanes\"]), d[\"shadow_disagreement_lanes\"]
+" "$rep"' "$rep"
+check "report shows compliance: routed rate, unrouted runs, outcome rates, open decisions" 'python3 -c "
+import json,sys; c=json.loads(sys.argv[1])[\"compliance\"]
+assert c[\"unrouted_lane_runs\"]>=1 and 0<c[\"routed_lane_run_rate\"]<1, c
+assert c[\"outcome_rate\"] is not None and c[\"outcome_rate_codex_routes\"] is not None, c
+assert c[\"codex_decisions_without_lane_run\"]>=1 and c[\"open_decisions_recent\"], c
 " "$rep"' "$rep"
 
 echo "Isolation"

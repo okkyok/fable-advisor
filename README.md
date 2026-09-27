@@ -98,9 +98,17 @@ per-attempt timeout) or [jev-cli](https://pypi.org/project/jev-cli/)
 Measurement data accumulates mostly on its own: routing and review decisions
 are logged by the router, and every lane run is logged by `codex-lane.sh
 --route-id <id>` (status, duration, model, effort, scope violations) — the
-report's `lane_attempts` and `shadow_disagreement_lanes` need nothing else. The
-one manual step is `fable-route.py outcome --id <id> --outcome success|...`,
-which records whether the result was accepted.
+report's `lane_attempts` and `shadow_disagreement_lanes` need nothing else. A lane
+run without `--route-id` is still logged, as `unrouted`. The one manual step is
+`fable-route.py outcome --id <id> --outcome success|...`, which records whether
+the result was accepted.
+
+The report's `compliance` block says whether the data can be trusted before you
+draw conclusions from it: the share of lane runs that carried a route id,
+unrouted runs, codex decisions with no lane run, outcome rates (codex and
+Claude-side routes separately), reviews linked to a decision, and the most
+recent decisions still open. If the routed share stays under ~90% or the outcome
+rate under ~70%, the next step is a warning hook — not before.
 
 ## Install
 

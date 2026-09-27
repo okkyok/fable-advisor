@@ -235,8 +235,10 @@ word alone.
 
 `fable-route.py` appends every route and review decision to
 `~/.claude/fable-advisor/routing.jsonl` (`FABLE_LEDGER`; `off` disables it), and
-`codex-lane.sh --route-id` appends one `attempt` row per lane run — that part
-needs no one to remember it. What only you know is whether the result was
+`codex-lane.sh` appends one `attempt` row per lane run — that part needs no one
+to remember it. A run without `--route-id` is still logged, as `unrouted`, and
+the report's `compliance` block counts those: a skipped router shows up as a
+number, not as silently missing data. What only you know is whether the result was
 accepted, so close each routed task with its outcome; attempts and duration are
 filled in from the lane rows:
 
