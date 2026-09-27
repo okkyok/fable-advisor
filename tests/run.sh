@@ -204,7 +204,7 @@ spec() { printf 'Objective: fix it.\nFiles: %s\n' "$1" > "$2"; }
 argv_has() { grep -rqxF -- "$1" "$STUB_ARGV_DIR"; }
 # A lane whose output equals the tree is an empty diff and removes itself.
 discard() { local w; w=$(awk '/worktree:/{print $2; exit}' <<<"$1"); [ -n "$w" ] && [ -d "$w" ] && git -C "$REPO" worktree remove --force "$w"; rm -f "$w.codex-stderr.log"; }
-REPO="$T/repo"; mkrepo "$REPO"; spec src/calc.py "$T/spec1"
+REPO="$T/repo"; mkrepo "$REPO"; spec src/calc.py "$T/spec1"; spec src/net.py "$T/spec-net"
 snap() { ( cd "$REPO" && find . -path ./.git -prune -o -type f -print0 | sort -z | xargs -0 cat | cksum ); }
 before=$(snap)
 out=$("$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" 2>/dev/null); rc=$?
@@ -249,6 +249,15 @@ out=$(STUB_CODEX=nothing "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.p
 check "empty diff -> exit 1, worktree removed" '[ $rc -eq 1 ] && [ "$(git -C "$REPO" worktree list | wc -l)" -eq "$n0" ]' "$out"
 out=$(STUB_CODEX=sleep "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" --timeout 1 2>/dev/null); rc=$?
 check "timeout -> exit 4, worktree kept for resume" '[ $rc -eq 4 ] && [ -d "$(awk "/worktree:/{print \$2; exit}" <<<"$out")" ]' "$out"
+discard "$out"
+rid2=$(field "$(route off "$MIDDLE" --task "net down")" id)
+out=$(STUB_CODEX=netdown "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" --timeout 2 --route-id "$rid2" 2>/dev/null); rc=$?
+check "no network to the API -> exit 3 (unavailable), not a timeout to resume" '[ $rc -eq 3 ] && grep -q "unavailable — network" <<<"$out" && grep -q "Proxy connection failed" <<<"$out"' "$out"
+check "network failure keeps the log, removes the empty worktree" '[ -f "$(awk "/log:/{print \$2; exit}" <<<"$out")" ] && [ "$(git -C "$REPO" worktree list | wc -l)" -eq "$n0" ]' "$out"
+a=$(grep "\"id\":\"$rid2\"" "$FABLE_LEDGER" | grep '"event":"attempt"' | tail -n 1)
+check "network failure is recorded as unavailable with its cause" '[ "$(field "$a" lane_status)" = unavailable ] && grep -q "network" <<<"$(field "$a" reason)"' "$a"
+out=$(STUB_CODEX=netdown_after_write "$S/codex-lane.sh" --spec "$T/spec-net" --files src/net.py --repo "$REPO" --timeout 2 2>/dev/null); rc=$?
+check "network lost after work landed -> still a timeout, worktree kept to resume" '[ $rc -eq 4 ] && [ -d "$(awk "/worktree:/{print \$2; exit}" <<<"$out")" ]' "$out"
 discard "$out"
 
 echo "Lane attempts are recorded automatically"

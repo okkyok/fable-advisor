@@ -172,7 +172,7 @@ A lane that finishes with an empty diff has failed. Re-issue it; do not accept i
 | What happened | What to do |
 |---|---|
 | **Codex quota exhausted** (lane exit `3`) | **Stop and report the reset time. Do not silently fail over to Claude.** Failing over spends the scarce subscription at the exact moment the abundant one is unavailable — over five weeks this pattern moved 47 tasks and ~5.8 hours onto the Claude side, none of them because the task needed Claude. Tell the user when codex returns and let them choose: wait, or authorise `implementer` with `model: sonnet`. |
-| Codex unavailable for a non-quota reason (auth, broken install) | Report it with the probe output. This is a fix, not a reroute — a retry will fail the same way. |
+| Codex unavailable for a non-quota reason (auth, broken install, no network to the API — lane exit `3`) | Report it with the probe output. This is a fix, not a reroute — a retry will fail the same way. |
 | Codex ran out of wall clock with work in progress | Do **not** move lanes. Respawn the same lane against **the same worktree** with a `RESUME` block naming what landed and what remains. |
 | Codex cannot reach a tool or a verification target | Run that one operation yourself, hand the result back, and let the lane keep the implementation. A capability gap is not a change of owner. |
 | `SCOPE VIOLATIONS` in the lane report | The spec was under-specified. Apply only the allowed paths, widen **Files** if the extra paths were genuinely required, and re-issue. Never reconcile it with a checkout on the main tree. |
