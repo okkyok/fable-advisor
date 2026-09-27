@@ -7,7 +7,9 @@
 # a default changed here changes it everywhere.
 #
 # Rolling Jev back is one line:   export FABLE_JEV_MODE=off
-# (off is also the default, and off never touches Jev code, binaries or keys.)
+# (off never touches Jev code, binaries or keys. The default is shadow: Jev is
+# asked about the ambiguous middle and only logged, never used; without a Jev
+# backend or key each such call is logged as a fallback and routing is unchanged.)
 
 # --- Codex lane (permanent; independent of Jev) --------------------------------
 : "${FABLE_CODEX_DEFAULT_MODEL:=gpt-6-luna}"   # default implementation model
@@ -18,7 +20,7 @@
 : "${FABLE_LEDGER:=$HOME/.claude/fable-advisor/routing.jsonl}"   # "off" disables writing
 
 # --- Jev adaptive routing (optional; removable) ---------------------------------
-: "${FABLE_JEV_MODE:=off}"                     # off | shadow | active
+: "${FABLE_JEV_MODE:=shadow}"                  # off | shadow | active
 : "${FABLE_JEV_MIN_CONFIDENCE:=0.80}"          # below this, active mode uses the deterministic route
 : "${FABLE_JEV_TIMEOUT:=8}"                    # seconds; a slower Jev is a fallback, not a wait
 : "${FABLE_JEV_BACKEND:=auto}"                 # auto | semdecide | jev-cli

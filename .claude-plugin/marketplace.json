@@ -1,7 +1,7 @@
 {
   "name": "fable-advisor",
   "metadata": {
-    "description": "Delegation control plane for Claude Code: implementation goes to a GPT-6 Luna/Sol Codex lane by default and stays Claude-side for a named reason, each lane isolated in its own git worktree, routed by a deterministic policy with optional Jev adaptive routing (off by default), with a model-parameterized Claude-side implementer and a Fable 5 reviewer used in proportion to risk."
+    "description": "Delegation control plane for Claude Code: implementation goes to a GPT-6 Luna/Sol Codex lane by default and stays Claude-side for a named reason, each lane isolated in its own git worktree, routed by a deterministic policy with optional Jev adaptive routing (shadow, log-only, by default), with a model-parameterized Claude-side implementer and a Fable 5 reviewer used in proportion to risk."
   },
   "owner": {
     "name": "Dan McAteer",
