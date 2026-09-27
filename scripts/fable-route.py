@@ -4,6 +4,7 @@
     fable-route.py route   [--task T] [--class C] [--route R] < decision-state.json
     fable-route.py review  [--id ID] [--task T]                < review-state.json
     fable-route.py outcome --id ID --outcome O [--attempts N] [--duration S] [--note N]
+    fable-route.py attempt --id ID --lane-status S ...   (written by codex-lane.sh --route-id)
     fable-route.py config
 
 Obvious cases are decided by rules in this file and never reach Jev. Only the
@@ -399,13 +400,30 @@ def cmd_review(args, text):
 OUTCOMES = ("success", "retry", "failover", "blocked", "unavailable", "timeout")
 
 
+LANE_STATUSES = ("ok", "empty_diff", "unavailable", "timeout", "blocked", "error")
+
+
+def cmd_attempt(args):
+    """One codex lane run, recorded by codex-lane.sh itself — no one has to remember."""
+    previous = sum(1 for r in read_ledger() if r.get("id") == args.id and r.get("event") == "attempt")
+    record = {"event": "attempt", "id": args.id, "ts": now(), "attempt": previous + 1,
+              "lane_status": args.lane_status, "rc": args.rc, "duration_s": args.duration,
+              "model": args.model, "effort": args.effort, "touched": args.touched,
+              "scope_violations": args.violations,
+              "reason": args.reason[:200] if args.reason else None}
+    append(record)
+    emit(record)
+
+
 def cmd_outcome(args):
-    decision, review = {}, {}
+    decision, review, attempts = {}, {}, []
     for rec in read_ledger():
         if rec.get("id") == args.id and rec.get("event") == "decision":
             decision = rec
         elif rec.get("id") == args.id and rec.get("event") == "review":
             review = rec
+        elif rec.get("id") == args.id and rec.get("event") == "attempt":
+            attempts.append(rec)
     if not decision:
         warn("no decision with id %s in the ledger; writing the outcome alone" % args.id)
     record = {k: v for k, v in decision.items() if k not in ("event", "ts", "declare")}
@@ -414,8 +432,13 @@ def cmd_outcome(args):
             record[key] = value
         elif key.startswith("jev_"):
             record["review_" + key] = value
+    # Lane runs recorded by codex-lane.sh fill in what the caller left out.
+    lane_seconds = [a["duration_s"] for a in attempts
+                    if isinstance(a.get("duration_s"), (int, float)) and not isinstance(a.get("duration_s"), bool)]
+    count = args.attempts if args.attempts is not None else (len(attempts) or 1)
+    duration = args.duration if args.duration is not None else (sum(lane_seconds) if lane_seconds else None)
     record.update(event="outcome", id=args.id, ts=now(), outcome=args.outcome,
-                  attempts=args.attempts, duration_s=args.duration, note=args.note)
+                  attempts=count, duration_s=duration, note=args.note)
     append(record)
     emit(record)
 
@@ -450,9 +473,19 @@ def main(argv=None):
     o = sub.add_parser("outcome", help="record how a routed task ended")
     o.add_argument("--id", required=True)
     o.add_argument("--outcome", required=True, choices=OUTCOMES)
-    o.add_argument("--attempts", type=int, default=1)
-    o.add_argument("--duration", type=float, default=None)
+    o.add_argument("--attempts", type=int, default=None, help="default: lane attempts recorded for the id")
+    o.add_argument("--duration", type=float, default=None, help="default: their summed duration")
     o.add_argument("--note", default=None)
+    a = sub.add_parser("attempt", help="record one lane run (codex-lane.sh does this)")
+    a.add_argument("--id", required=True)
+    a.add_argument("--lane-status", required=True, choices=LANE_STATUSES)
+    a.add_argument("--rc", type=int, default=None)
+    a.add_argument("--duration", type=float, default=None)
+    a.add_argument("--model", default=None)
+    a.add_argument("--effort", default=None)
+    a.add_argument("--touched", type=int, default=None)
+    a.add_argument("--violations", type=int, default=None)
+    a.add_argument("--reason", default=None)
     sub.add_parser("config", help="print the effective configuration")
     args = parser.parse_args(argv)
     try:
@@ -461,6 +494,8 @@ def main(argv=None):
             (cmd_route if args.command == "route" else cmd_review)(args, text)
         elif args.command == "outcome":
             cmd_outcome(args)
+        elif args.command == "attempt":
+            cmd_attempt(args)
         else:
             cmd_config(args)
     except (StateError, OSError) as exc:

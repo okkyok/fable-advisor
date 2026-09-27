@@ -112,8 +112,14 @@ reports what the lane touched:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/codex-lane.sh" \
-  --spec "$SPEC" --files "<the spec's Files, comma-separated>" --model "$MODEL" --effort "$EFFORT"
+  --spec "$SPEC" --files "<the spec's Files, comma-separated>" --model "$MODEL" --effort "$EFFORT" \
+  ${ROUTE_ID:+--route-id "$ROUTE_ID"}
 ```
+
+`ROUTE_ID` comes from the caller's `ROUTE_ID:` line (the router's decision id).
+Pass it whenever it is given, including on a `RESUME` run: the script then
+writes one attempt row per run to the routing ledger, which is how the routing
+policy gets measured. Without it the run is simply not recorded.
 
 Only codex's final message and the `LANE REPORT` come back; the session
 transcript goes to the `log:` path it names. Read that log when the run failed —

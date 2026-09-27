@@ -86,11 +86,16 @@ Jev's answer only when its confidence is at least `FABLE_JEV_MIN_CONFIDENCE`
 (0.80) and it respects the floor — any failure, timeout or doubt falls back to
 the deterministic route and is logged as `jev_status: fallback`.
 
-Run the lane with exactly what the router returned:
+Run the lane with exactly what the router returned, and its `id` — the lane then
+records every run (status, duration, model, effort, scope violations) in the
+ledger by itself:
 
 ```bash
-scripts/codex-lane.sh --spec <specfile> --files "<f1,...>" --model <model> --effort <effort>
+scripts/codex-lane.sh --spec <specfile> --files "<f1,...>" --model <model> --effort <effort> --route-id <id>
 ```
+
+Handing the task to `codex-implementer`? Put `MODEL:`, `EFFORT:` and `ROUTE_ID:`
+lines next to the spec.
 
 ## Every codex lane runs in its own worktree
 
@@ -229,13 +234,15 @@ word alone.
 ## Ledger
 
 `fable-route.py` appends every route and review decision to
-`~/.claude/fable-advisor/routing.jsonl` (`FABLE_LEDGER`; `off` disables it).
-Close each routed task with its outcome, which joins decision, review and result
-into one row:
+`~/.claude/fable-advisor/routing.jsonl` (`FABLE_LEDGER`; `off` disables it), and
+`codex-lane.sh --route-id` appends one `attempt` row per lane run — that part
+needs no one to remember it. What only you know is whether the result was
+accepted, so close each routed task with its outcome; attempts and duration are
+filled in from the lane rows:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/fable-route.py" outcome --id <id> \
-  --outcome success|retry|failover|blocked|unavailable|timeout --attempts 1 --duration 180
+  --outcome success|retry|failover|blocked|unavailable|timeout
 "${CLAUDE_PLUGIN_ROOT}/scripts/routing-report.py"     # agreement, success by route, confidence buckets
 ```
 

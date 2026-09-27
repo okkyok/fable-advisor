@@ -4,8 +4,9 @@
     routing-report.py [--ledger PATH] [--json]
 
 Reads the ledger fable-route.py writes (FABLE_LEDGER, default
-~/.claude/fable-advisor/routing.jsonl). Decisions, reviews and outcomes are
-joined by id; lines written before 5.1 (no "event" field) are counted
+~/.claude/fable-advisor/routing.jsonl). Decisions, reviews, lane attempts
+(written automatically by codex-lane.sh --route-id) and outcomes are joined by
+id; lines written before 5.1 (no "event" field) are counted
 separately so old data stays readable. Standard library only.
 """
 from __future__ import annotations
@@ -74,6 +75,10 @@ def report(rows):
     decisions = [r for r in rows if r.get("event") == "decision"]
     reviews = [r for r in rows if r.get("event") == "review"]
     outcomes = {r["id"]: r for r in rows if r.get("event") == "outcome" and text(r.get("id"))}
+    attempts = defaultdict(list)
+    for r in rows:
+        if r.get("event") == "attempt" and text(r.get("id")):
+            attempts[r["id"]].append(r)
 
     out = {"total_decisions": len(decisions),
            "jev_mode": tally((r.get("jev_mode") for r in decisions)),
@@ -87,7 +92,29 @@ def report(rows):
     out["by_route"] = {k: outcome_stats(v) for k, v in sorted(by_route.items(), key=lambda i: str(i[0]))}
     out["overall"] = outcome_stats(list(outcomes.values()))
 
-    asked = [r for r in decisions if text(r.get("jev_route"))]
+    # Lane-level evidence, recorded mechanically: available even when nobody
+    # ran `outcome`. "first_try_ok" is the lane's own success, not acceptance.
+    lanes = defaultdict(list)
+    for d in decisions:
+        runs = attempts.get(text(d.get("id")) or "")
+        if runs:
+            lanes[d.get("actual_route")].append(runs)
+    out["lane_attempts"] = {
+        "tasks_with_attempts": sum(len(v) for v in lanes.values()),
+        "tasks_with_outcome": sum(1 for d in decisions if text(d.get("id")) in outcomes),
+        "by_route": {str(route): {
+            "n": len(runs),
+            "first_try_ok": rate(sum(1 for r in runs if r[0].get("lane_status") == "ok"), len(runs)),
+            "eventually_ok": rate(sum(1 for r in runs if any(a.get("lane_status") == "ok" for a in r)), len(runs)),
+            "avg_attempts": mean([len(r) for r in runs]),
+            "avg_lane_s": mean([sum(num(a.get("duration_s")) or 0 for a in r) for r in runs]),
+            "scope_violation_rate": rate(sum(1 for r in runs if any((num(a.get("scope_violations")) or 0) > 0 for a in r)), len(runs)),
+            "status": tally(a.get("lane_status") for r in runs for a in r)}
+            for route, runs in sorted(lanes.items(), key=lambda i: str(i[0]))},
+    }
+
+    # Off-list answers are counted under fallback_reasons, not as disagreements.
+    asked = [r for r in decisions if text(r.get("jev_route")) and r.get("jev_reason") != "unknown_choice"]
     agree = sum(1 for r in asked if r["jev_route"] == r.get("legacy_route"))
     out["jev"] = {
         "consulted": sum(1 for r in decisions if r.get("jev_status") not in (None, "skipped")),
@@ -119,6 +146,17 @@ def report(rows):
         if o.get("jev_status") == "shadow" and o.get("jev_route") != o.get("actual_route"):
             shadow["jev=%s ran=%s" % (o.get("jev_route"), o.get("actual_route"))].append(o)
     out["shadow_disagreement_outcomes"] = {k: outcome_stats(v) for k, v in sorted(shadow.items())}
+    # The same question from lane attempts alone, so shadow data is usable
+    # even where outcomes were never recorded.
+    shadow_lane = defaultdict(list)
+    for d in decisions:
+        runs = attempts.get(text(d.get("id")) or "")
+        if runs and d.get("jev_status") == "shadow" and text(d.get("jev_route")) \
+                and d["jev_route"] != d.get("actual_route"):
+            shadow_lane["jev=%s ran=%s" % (d["jev_route"], d.get("actual_route"))].append(runs)
+    out["shadow_disagreement_lanes"] = {k: {
+        "n": len(v), "first_try_ok": rate(sum(1 for r in v if r[0].get("lane_status") == "ok"), len(v)),
+        "avg_attempts": mean([len(r) for r in v])} for k, v in sorted(shadow_lane.items())}
 
     review_dist = Counter(text(r.get("review")) for r in reviews)
     out["review"] = {"total": len(reviews), "distribution": dict(review_dist),

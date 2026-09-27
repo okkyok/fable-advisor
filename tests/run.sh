@@ -251,6 +251,42 @@ out=$(STUB_CODEX=sleep "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py 
 check "timeout -> exit 4, worktree kept for resume" '[ $rc -eq 4 ] && [ -d "$(awk "/worktree:/{print \$2; exit}" <<<"$out")" ]' "$out"
 discard "$out"
 
+echo "Lane attempts are recorded automatically"
+rid=$(field "$(STUB_CHOICE=luna_low STUB_CONF=0.91 PATH="$JEVBIN:$PATH" route shadow "$MIDDLE" --task "attempt test")" id)
+att() { grep "\"event\":\"attempt\"" "$FABLE_LEDGER" | grep "\"id\":\"$rid\"" | sed -n "${1}p"; }
+spec src/mul.py "$T/spec-mul"
+out=$(STUB_CODEX=quota "$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" --route-id "$rid" 2>/dev/null)
+a=$(att 1)
+check "an unavailable run is recorded with its reason" '[ "$(field "$a" lane_status)/$(field "$a" attempt)" = unavailable/1 ] && grep -q "usage limit" <<<"$(field "$a" reason)"' "$a"
+out=$("$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" --route-id "$rid" 2>/dev/null)
+a=$(att 2)
+check "a successful run is recorded: status, attempt no., model, effort, touched" '[ "$(field "$a" lane_status)|$(field "$a" attempt)|$(field "$a" model)|$(field "$a" effort)|$(field "$a" touched)|$(field "$a" scope_violations)" = "ok|2|gpt-6-luna|high|1|0" ] && [ -n "$(field "$a" duration_s)" ]' "$a"
+check "recording does not change the lane report or exit" 'grep -q "LANE REPORT" <<<"$out" && ! grep -q "\"event\"" <<<"$out"' "$out"
+discard "$out"
+"$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" --route-id "$rid" --effort ultra >/dev/null 2>&1
+a=$(att 3)
+check "a refused run (bad effort) is recorded as blocked" '[ "$(field "$a" lane_status)/$(field "$a" rc)" = blocked/5 ]' "$a"
+out=$(STUB_CODEX=violation "$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" --route-id "$rid" 2>/dev/null)
+a=$(att 4)
+check "scope violations are counted in the attempt row" '[ "$(field "$a" scope_violations)" = 1 ]' "$a"
+discard "$out"
+n=$(wc -l < "$FABLE_LEDGER")
+"$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" --route-id 'bad id;rm' >/dev/null 2>&1; rc=$?
+check "a malformed --route-id is refused and writes nothing" '[ $rc -eq 5 ] && [ "$(wc -l < "$FABLE_LEDGER")" -eq "$n" ]'
+out=$(FABLE_LEDGER=off "$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" --route-id "$rid" 2>/dev/null); rc=$?
+check "ledger off: the lane still runs and writes no row" '[ $rc -eq 0 ] && [ "$(wc -l < "$FABLE_LEDGER")" -eq "$n" ]' "$out"
+discard "$out"
+out=$(PATH="$BASE" "$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" 2>/dev/null); rc=$?
+check "without --route-id nothing is recorded" '[ $rc -eq 3 ] && [ "$(wc -l < "$FABLE_LEDGER")" -eq "$n" ]'
+o=$(python3 "$S/fable-route.py" outcome --id "$rid" --outcome success)
+check "outcome fills attempts and duration from lane rows" '[ "$(field "$o" attempts)" = 4 ] && [ -n "$(field "$o" duration_s)" ]' "$o"
+rep=$(python3 "$S/routing-report.py" --json)
+check "report shows lane attempts per route and shadow disagreements from lanes" 'python3 -c "
+import json,sys; d=json.loads(sys.argv[1]); l=d[\"lane_attempts\"][\"by_route\"][\"luna_high\"]
+assert l[\"n\"]>=1 and l[\"avg_attempts\"]>=1, l
+assert any(k.startswith(\"jev=luna_low ran=luna_high\") for k in d[\"shadow_disagreement_lanes\"]), d[\"shadow_disagreement_lanes\"]
+" "$rep"' "$rep"
+
 echo "Isolation"
 REPO="$T/repo2"; mkrepo "$REPO"
 out=$(STUB_CODEX=violation "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" 2>/dev/null)

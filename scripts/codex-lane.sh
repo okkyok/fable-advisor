@@ -14,6 +14,7 @@
 #
 # usage: codex-lane.sh --spec <file> --files <f1,f2,...>
 #                      [--model gpt-6-luna] [--effort high] [--repo <path>] [--timeout 570]
+#                      [--route-id <id from fable-route.py route>]
 #
 # --model / --effort default to FABLE_CODEX_DEFAULT_MODEL / FABLE_CODEX_DEFAULT_EFFORT
 # (scripts/fable-config.sh). Changing the default model is a config change, never
@@ -22,13 +23,18 @@
 # stdout: codex's last message, then a LANE REPORT block.
 # exit:   0 ok · 1 empty diff · 3 codex unavailable (missing, auth, quota, model
 #         access) · 4 timeout · 5 bad usage/blocked
+#
+# With --route-id, every run — whichever exit it takes — appends an "attempt"
+# row to the routing ledger (status, rc, duration, model, effort, touched,
+# scope violations), so outcome data accumulates without anyone remembering.
 set -euo pipefail
+SECONDS=0
 
 here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=fable-config.sh
 . "$here/fable-config.sh"
 
-SPEC="" FILES="" MODEL="$FABLE_CODEX_DEFAULT_MODEL" EFFORT="$FABLE_CODEX_DEFAULT_EFFORT" REPO="" TMO=570
+SPEC="" FILES="" MODEL="$FABLE_CODEX_DEFAULT_MODEL" EFFORT="$FABLE_CODEX_DEFAULT_EFFORT" REPO="" TMO=570 ROUTE_ID=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --spec)    SPEC="$2"; shift 2 ;;
@@ -37,9 +43,32 @@ while [ $# -gt 0 ]; do
     --effort)  EFFORT="$2"; shift 2 ;;
     --repo)    REPO="$2"; shift 2 ;;
     --timeout) TMO="$2"; shift 2 ;;
+    --route-id) ROUTE_ID="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 5 ;;
   esac
 done
+case "$ROUTE_ID" in
+  *[!A-Za-z0-9_-]*) echo "--route-id must be the id fable-route.py printed (got '$ROUTE_ID')" >&2; exit 5 ;;
+esac
+
+# --- attempt record: one ledger row per run, on every exit path ------------------
+# LANE_STATUS is set just before each deliberate exit; anything else is derived
+# from the exit code. Recording never changes the lane's own exit status, and a
+# missing python3 or an unwritable ledger only costs the row.
+LANE_STATUS="" N_TOUCHED="" N_VIOL="" WHY=""
+record_attempt() {
+  local rc=$1 status=$LANE_STATUS
+  [ -n "$ROUTE_ID" ] || return 0
+  if [ -z "$status" ]; then
+    case "$rc" in 0) status=ok ;; 1) status=empty_diff ;; 3) status=unavailable ;;
+                  4) status=timeout ;; 5) status=blocked ;; *) status=error ;; esac
+  fi
+  python3 "$here/fable-route.py" attempt --id "$ROUTE_ID" --lane-status "$status" \
+    --rc "$rc" --duration "$SECONDS" --model "$MODEL" --effort "$EFFORT" \
+    ${N_TOUCHED:+--touched "$N_TOUCHED"} ${N_VIOL:+--violations "$N_VIOL"} \
+    ${WHY:+--reason "$WHY"} >/dev/null 2>&1 || true
+}
+trap 'record_attempt $?' EXIT
 [ -f "$SPEC" ] || { echo "--spec must be a readable file" >&2; exit 5; }
 [ -n "$FILES" ] || { echo "--files is required: the lane's allowed paths" >&2; exit 5; }
 
@@ -57,6 +86,7 @@ esac
 
 # Unavailable is a routing fact for the caller, reported before any worktree exists.
 command -v codex >/dev/null 2>&1 || {
+  WHY="codex not found on PATH"
   echo; echo "LANE REPORT"; echo "  status:   unavailable — codex not found on PATH"
   echo "  model:    $MODEL"; echo "  effort:   $EFFORT"
   exit 3; }
@@ -199,6 +229,7 @@ if [ "$rc" -ne 0 ] && [ -z "$touched" ]; then
         | grep -iE '^[[:space:]]*(\[[^]]*\][[:space:]]*)?([a-z_-]+[[:space:]])?(error|fatal):' \
         | grep -i -m1 -E 'usage limit|rate.?limit|quota|try again (at|in)|(status|http|error)[^0-9]{0,6}(401|403|429)|not logged in|log ?in required|please (log|sign) ?in|unauthori[sz]ed|authenticat|model.{0,60}(not (found|supported|available)|does not exist|unavailable|no access)|(unknown|invalid|unsupported) model' || true)
   if [ -n "$why" ]; then
+    WHY=$why
     echo; echo "LANE REPORT"; echo "  status:   unavailable — $why"
     echo "  model:    $MODEL"; echo "  effort:   $EFFORT"; echo "  rc:       $rc"
     echo "  log:      $ERRLOG   (kept as evidence)"
@@ -216,6 +247,8 @@ echo "  worktree: $WT"
 echo "  rc:       $rc"
 echo "  log:      $ERRLOG"
 echo "  touched:"; printf '%s\n' "$touched" | sed 's/^/    /'
+N_TOUCHED=$(printf '%s\n' "$touched" | sed '/^$/d' | wc -l | tr -d ' ')
+N_VIOL=$(printf '%s\n' "$violations" | sed '/^$/d' | wc -l | tr -d ' ')
 if [ -n "$violations" ]; then
   echo "  SCOPE VIOLATIONS (edited but not in the spec's Files):"
   printf '%s\n' "$violations" | sed 's/^/    /'
@@ -231,4 +264,5 @@ echo "  Apply only the allowed paths back to the main tree with:"
 echo "    scripts/codex-lane-apply.sh --worktree '$WT' --repo '$REPO' --files '$FILES'"
 echo "  Discard the whole lane with:"
 echo "    git -C '$REPO' worktree remove --force '$WT'; rm -f '$ERRLOG'"
+[ "$rc" -eq 0 ] && LANE_STATUS=ok || LANE_STATUS=error   # wrote files, but codex failed
 exit "$rc"

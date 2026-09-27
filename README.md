@@ -95,6 +95,13 @@ per-attempt timeout) or [jev-cli](https://pypi.org/project/jev-cli/)
 `python3 scripts/jev_route.py probe`, then read the results with
 `scripts/routing-report.py`.
 
+Measurement data accumulates mostly on its own: routing and review decisions
+are logged by the router, and every lane run is logged by `codex-lane.sh
+--route-id <id>` (status, duration, model, effort, scope violations) — the
+report's `lane_attempts` and `shadow_disagreement_lanes` need nothing else. The
+one manual step is `fable-route.py outcome --id <id> --outcome success|...`,
+which records whether the result was accepted.
+
 ## Install
 
 ```
@@ -117,7 +124,7 @@ caller reroutes; it never silently substitutes a different model.
 | `scripts/fable-config.sh` | Every setting, as an environment variable with a safe default. |
 | `scripts/jev_route.py` | The only Jev-specific file: a typed-choice adapter over semdecide / jev-cli. Never imported when Jev is off. |
 | `scripts/routing-report.py` | Ledger summary: Jev/legacy agreement, route distribution, success/retry/duration by route, confidence buckets. |
-| `scripts/codex-lane.sh` | Runs a Codex lane inside an isolated worktree with `--model`/`--effort` from the caller, and reports what it touched, including paths outside its spec. |
+| `scripts/codex-lane.sh` | Runs a Codex lane inside an isolated worktree with `--model`/`--effort` from the caller, and reports what it touched, including paths outside its spec. With `--route-id` it records every run in the ledger itself. |
 | `scripts/codex-lane-apply.sh` | Copies only the spec'd paths back into the main tree. Purely additive — never checkout/reset/clean/stash. |
 | `scripts/verify-codex-lane.sh` | End-to-end check: runs a real lane against a scratch repo and asserts a co-resident lane's uncommitted work survives. |
 | `tests/run.sh` | Offline suite (stub codex and Jev): routing in all three modes, every fallback, hard rules, review gate, ledger, lane model/effort, isolation, concurrent lanes. |
