@@ -5,6 +5,7 @@
     fable-route.py review  [--id ID] [--task T]                < review-state.json
     fable-route.py outcome --id ID --outcome O [--attempts N] [--duration S] [--note N]
     fable-route.py attempt --id ID --lane-status S ...   (written by codex-lane.sh --route-id)
+    fable-route.py backfill --model M --effort E --file-count N ...   (codex-lane.sh, no --route-id)
     fable-route.py config
 
 Obvious cases are decided by rules in this file and never reach Jev. Only the
@@ -375,6 +376,49 @@ def cmd_route(args, text):
     emit(record)
 
 
+def observed_route(model, effort):
+    """The route a lane's own model/effort amounts to, or "unmapped"."""
+    if model == os.environ["FABLE_CODEX_STRONG_MODEL"]:
+        return "sol_high"
+    if model == os.environ["FABLE_CODEX_DEFAULT_MODEL"]:
+        return "luna_low" if effort == "low" else "luna_high"
+    return "unmapped"
+
+
+def cmd_backfill(args):
+    """A decision for a lane run that skipped the router, written by codex-lane.sh.
+
+    The lane has already chosen its model and effort, so nothing here may change
+    them: the actual route is what runs, and Jev — in shadow and active alike —
+    is only logged. That turns every unrouted run into shadow evidence instead
+    of a run the report cannot join to anything.
+    """
+    state = {"file_count": args.file_count}
+    if args.objective:
+        state["objective"] = args.objective[:OBJECTIVE_MAX]
+    if args.verification:
+        state["verification_available"] = True
+    mode = jev_mode()
+    legacy, rule, obvious = deterministic_route(state)
+    actual = observed_route(args.model, args.effort)
+    record = {"event": "decision", "id": uuid.uuid4().hex[:12], "ts": now(),
+              "task": args.task or state.get("objective", "")[:80], "class": "implement",
+              "jev_mode": mode, "legacy_route": legacy, "rule": rule, "floor": route_floor(state),
+              "backfilled": True}
+    if mode != "off":
+        if obvious:
+            record["jev_status"] = "skipped"
+        else:
+            floor = record["floor"]
+            options = {k: v for k, v in ROUTE_OPTIONS.items() if not below(k, floor)}
+            fields, _ = consult_jev("shadow", ROUTE_QUESTION, state, options)
+            record.update(fields)
+    record.update(actual_route=actual, decided_by="lane", lane="codex-implementer",
+                  model=args.model, effort=args.effort)
+    append(record)
+    emit(record)
+
+
 def cmd_review(args, text):
     state, ignored = parse_state(text, REVIEW_FIELDS)
     mode = jev_mode()
@@ -488,6 +532,13 @@ def main(argv=None):
     a.add_argument("--violations", type=int, default=None)
     a.add_argument("--reason", default=None)
     a.add_argument("--unrouted", action="store_true", help="the lane ran without a route id")
+    b = sub.add_parser("backfill", help="record a decision for a lane run without a route id (codex-lane.sh does this)")
+    b.add_argument("--model", required=True)
+    b.add_argument("--effort", required=True)
+    b.add_argument("--file-count", type=int, required=True)
+    b.add_argument("--objective", default=None)
+    b.add_argument("--verification", action="store_true", help="the spec names a verification command")
+    b.add_argument("--task", default=None)
     sub.add_parser("config", help="print the effective configuration")
     args = parser.parse_args(argv)
     try:
@@ -498,6 +549,8 @@ def main(argv=None):
             cmd_outcome(args)
         elif args.command == "attempt":
             cmd_attempt(args)
+        elif args.command == "backfill":
+            cmd_backfill(args)
         else:
             cmd_config(args)
     except (StateError, OSError) as exc:

@@ -100,13 +100,17 @@ Measurement data accumulates mostly on its own: routing and review decisions
 are logged by the router, and every lane run is logged by `codex-lane.sh
 --route-id <id>` (status, duration, model, effort, scope violations) — the
 report's `lane_attempts` and `shadow_disagreement_lanes` need nothing else. A lane
-run without `--route-id` is still logged, as `unrouted`. The one manual step is
+run without `--route-id` is still logged, as `unrouted`, and gets a *backfilled*
+decision: the lane reads the objective, file count and whether a verification
+command is named off the spec, records the model/effort it runs as the actual
+route, and logs Jev's answer beside it (always log-only — a running lane's model
+and effort never change). The `LANE REPORT` prints that `route id:`. The one manual step is
 `fable-route.py outcome --id <id> --outcome success|...`, which records whether
 the result was accepted.
 
 The report's `compliance` block says whether the data can be trusted before you
 draw conclusions from it: the share of lane runs that carried a route id,
-unrouted runs, codex decisions with no lane run, outcome rates (codex and
+unrouted runs, backfilled decisions, codex decisions with no lane run, outcome rates (codex and
 Claude-side routes separately), reviews linked to a decision, and the most
 recent decisions still open. If the routed share stays under ~90% or the outcome
 rate under ~70%, the next step is a warning hook — not before.
@@ -153,6 +157,20 @@ A codex *timeout* does not move lanes — it resumes against the same worktree.
 Review in proportion to blast radius, and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
+
+## 5.3.0
+
+**Unrouted lane runs feed shadow mode.** Jev is only asked inside
+`fable-route.py route`, so a `codex-lane.sh` call without `--route-id` left
+shadow with nothing to measure — in practice most lane runs. Such a run now
+backfills a routing decision (`fable-route.py backfill`) from what the spec
+states — objective, file count, whether a verification command is named — with
+the lane's model/effort as the actual route and Jev's answer logged beside it.
+Jev stays log-only there even in `active`, because the lane has already chosen.
+The attempt row keeps `unrouted`, so `compliance.routed_lane_run_rate` still
+measures the skipped router (backfills no longer count as routed), and the
+report adds `backfilled_decisions` and `jev.consulted_on_backfill`. With
+`FABLE_LEDGER=off` nothing is backfilled and Jev is not called.
 
 ## 5.2.0
 
