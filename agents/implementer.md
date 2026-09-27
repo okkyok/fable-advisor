@@ -1,6 +1,6 @@
 ---
 name: implementer
-description: Claude-side implementation lane. Receives a five-part spec, writes the code itself, verifies it, and returns a structured report. Depth is chosen by the caller on the spawn — `model: haiku` for bulk mechanical edits below the spawn floor, `model: sonnet` (the default, and the failover target when the codex lane is quota-exhausted), `model: fable` for judgment-heavy work the spec cannot fully capture or a task that has already failed elsewhere. Use when work should leave the orchestrator's context but there is no reason to cross vendors.
+description: Claude-side implementation lane. Receives a five-part spec, writes the code itself, verifies it, and returns a structured report. Depth is chosen by the caller on the spawn — `model: haiku` for bulk mechanical edits below the spawn floor, `model: sonnet` (the default, and the failover target when the codex lane is quota-exhausted and the user has authorised it), `model: fable` for judgment-heavy work the spec cannot fully capture or a task that has already failed twice elsewhere (the router's `claude_fable` route). Use when work should leave the orchestrator's context but there is no reason to cross vendors.
 model: sonnet
 effort: high
 tools: Bash, Read, Write, Edit, Grep, Glob
