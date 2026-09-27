@@ -153,6 +153,15 @@ Review in proportion to blast radius, and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
 
+## 5.1.1
+
+A codex that cannot reach the API does not exit — it logs "Reconnecting...
+waiting for network" until the wall clock kills it, which the lane used to
+report as a timeout to resume. Seen with real codex 0.157.1 behind a proxy that
+refused the API. A timeout that wrote nothing and ends in that state is now
+`unavailable` (exit `3`), naming the network cause and keeping the log; a
+timeout after work landed is still a resumable timeout.
+
 ## 5.1.0
 
 **Permanent (independent of Jev).** GPT-6 Luna is the default codex model, and

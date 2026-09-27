@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Stub `codex` for tests/run.sh. Records its argv, then behaves per STUB_CODEX:
 #   fix (default) · violation · nothing · quota · badmodel · sleep · crash (echoes the prompt, then fails)
+#   netdown (no API, hangs) · netdown_after_write (writes, then loses the network)
 # For fix/violation it writes every path on the spec's "Files:" line, relative
 # to --cd — exactly where the real CLI would write.
 set -u
@@ -20,6 +21,9 @@ case "${STUB_CODEX:-fix}" in
   quota)    echo "ERROR: You've hit your usage limit. Try again at 3:05 PM." >&2; exit 1 ;;
   badmodel) echo "ERROR: The model 'gpt-9' does not exist or you do not have access to it." >&2; exit 1 ;;
   sleep)    sleep 30; exit 0 ;;
+  netdown)  # what real codex 0.157.1 printed when a proxy refused the API
+            echo "2026-09-27T04:13:21.840613Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: URL error: Proxy connection failed: HTTP CONNECT failed with status 403" >&2
+            echo "ERROR: Reconnecting... waiting for network" >&2; sleep 30; exit 0 ;;
   crash)    printf '%s\n' "$spec" >&2; echo "ERROR: internal panic in tool runner" >&2; exit 1 ;;
   nothing)  echo "done" > "$out"; exit 0 ;;
 esac
@@ -29,6 +33,9 @@ for f in $files; do
   mkdir -p "$cd_dir/$(dirname "$f")"
   printf 'def add(a, b):\n    return a + b\n' > "$cd_dir/$f"
 done
+if [ "${STUB_CODEX:-fix}" = netdown_after_write ]; then
+  echo "ERROR: Reconnecting... waiting for network" >&2; sleep 30
+fi
 [ "${STUB_CODEX:-fix}" = violation ] && echo "stray" > "$cd_dir/docs/README.md"
 echo "stub codex: implemented ${files//$'\n'/ }" > "$out"
 exit 0

@@ -133,8 +133,9 @@ precisely so that undoing a lane is `git worktree remove` and can never take a
 co-resident lane's uncommitted work with it.
 
 Exit codes: `1` empty diff (worktree removed — a failure, not a success) · `3`
-codex unavailable — not on PATH, or a failed run that names auth, quota or model
-access (the `status:` line quotes it; report it as `STATUS: unavailable`) · `4`
+codex unavailable — not on PATH, a failed run that names auth, quota or model
+access, or a run killed while codex was still "waiting for network" with nothing
+written (the `status:` line quotes it; report it as `STATUS: unavailable`) · `4`
 timeout (worktree kept — resume against it) · `5` blocked: bad `--model`/`--effort`,
 or the spec's Files do not resolve inside one git repository. On `5`, report
 `STATUS: blocked` and ask the architect to fix the call or narrow the Files rather

@@ -22,7 +22,7 @@
 #
 # stdout: codex's last message, then a LANE REPORT block.
 # exit:   0 ok · 1 empty diff · 3 codex unavailable (missing, auth, quota, model
-#         access) · 4 timeout · 5 bad usage/blocked
+#         access, or no network to the API) · 4 timeout · 5 bad usage/blocked
 #
 # Every run — whichever exit it takes — appends an "attempt" row to the routing
 # ledger (status, rc, duration, model, effort, touched, scope violations), so
@@ -194,6 +194,26 @@ tail -n 20 "$ERRLOG" >&2 2>/dev/null || true
 [ -f "$FINAL" ] && cat "$FINAL"
 
 if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+  # codex does not exit when it cannot reach the API: it logs "Reconnecting...
+  # waiting for network" until the wall clock kills it. A timeout that wrote
+  # nothing and ends in that state is codex being unreachable — the network,
+  # not the task — so it is reported as unavailable (exit 3), not as a timeout
+  # to resume (seen with real codex 0.157.1 behind a proxy that refused the API).
+  wrote=$( cd "$WT" && { git diff --name-only HEAD; git ls-files --others --exclude-standard; } \
+           | grep -v '^\.codex-final-message$' | sed '/^$/d' || true )
+  recent=$(tail -n 200 "$ERRLOG" 2>/dev/null || true)
+  if [ -z "$wrote" ] && grep -qiE 'waiting for network|reconnecting' <<<"$recent"; then
+    cause=$(grep -m1 -iE 'proxy connection failed|could not resolve|dns error|connection refused|network is unreachable|failed to connect|timed out' <<<"$recent" \
+            || grep -m1 -iE 'waiting for network|reconnecting' <<<"$recent" || true)
+    cause=$(printf '%s' "$cause" | sed 's/^[0-9T:.Z-]* *//' | cut -c1-160)
+    WHY="network: codex could not reach the API — $cause"
+    LANE_STATUS=unavailable
+    echo; echo "LANE REPORT"; echo "  status:   unavailable — $WHY"
+    echo "  model:    $MODEL"; echo "  effort:   $EFFORT"; echo "  rc:       $rc (killed after ${TMO}s)"
+    echo "  log:      $ERRLOG   (kept as evidence)"
+    cleanup
+    exit 3
+  fi
   echo; echo "LANE REPORT"; echo "  status:   timeout after ${TMO}s"
   echo "  model:    $MODEL"; echo "  effort:   $EFFORT"
   echo "  worktree: $WT   (kept — resume this lane against it)"
