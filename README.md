@@ -18,10 +18,10 @@ This is a fork of [DannyMac180/fable-advisor](https://github.com/DannyMac180/fab
 ## Adaptive Routing
 
 ```bash
-# Jev completely disabled (the default) — back to deterministic routing
+# Jev completely disabled — back to deterministic routing
 export FABLE_JEV_MODE=off
 
-# Measure Jev without changing behavior
+# Measure Jev without changing behavior (the default)
 export FABLE_JEV_MODE=shadow
 
 # Let Jev participate in routing
@@ -34,7 +34,7 @@ export FABLE_JEV_MODE=active
 | `shadow` | Log only. Jev classifies the ambiguous cases; its answer goes to the ledger next to the route that actually ran. |
 | `active` | Jev + confidence gate + deterministic fallback. Jev's route is used only at confidence ≥ `FABLE_JEV_MIN_CONFIDENCE` and never below the risk floor; any failure falls back and is logged. |
 
-**To stop using Jev: `export FABLE_JEV_MODE=off`** (or unset it). Nothing else.
+**To stop using Jev: `export FABLE_JEV_MODE=off`.** Nothing else.
 
 ```
 decision state ──► hard rules ──obvious──────────────────────────┐
@@ -78,7 +78,7 @@ all as environment variables:
 
 | Variable | Default | |
 |---|---|---|
-| `FABLE_JEV_MODE` | `off` | `off` \| `shadow` \| `active`; anything else is treated as `off` |
+| `FABLE_JEV_MODE` | `shadow` | `off` \| `shadow` \| `active`; anything else is treated as `off` |
 | `FABLE_JEV_MIN_CONFIDENCE` | `0.80` | below it, active mode uses the deterministic route |
 | `FABLE_JEV_TIMEOUT` | `8` | seconds before a Jev call counts as a fallback |
 | `FABLE_JEV_BACKEND` | `auto` | `semdecide` \| `jev-cli`; `auto` prefers semdecide |
@@ -87,8 +87,9 @@ all as environment variables:
 | `FABLE_CODEX_STRONG_MODEL` | `gpt-6-sol` | the `sol_high` model |
 | `FABLE_LEDGER` | `~/.claude/fable-advisor/routing.jsonl` | `off` disables the ledger |
 
-**Enabling Jev (shadow or active)** needs one existing OSS CLI and a TypeSafe key —
-neither is needed for `off`:
+**Jev answers (shadow or active)** need one existing OSS CLI and a TypeSafe key —
+neither is needed for `off`, and without them shadow logs each ambiguous case as
+`jev_status: fallback` and routes exactly as `off` would:
 [semdecide](https://github.com/sharziki/semdecide) (preferred: validates responses,
 per-attempt timeout) or [jev-cli](https://pypi.org/project/jev-cli/)
 (`uv tool install jev-cli`), plus `TYPESAFE_API_KEY`. Check the setup with
@@ -152,6 +153,16 @@ A codex *timeout* does not move lanes — it resumes against the same worktree.
 Review in proportion to blast radius, and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
+
+## 5.2.0
+
+**Shadow is the default.** `FABLE_JEV_MODE` now defaults to `shadow`, so every
+install starts collecting the data that decides whether `active` is worth
+turning on. Shadow never changes a route or a review: Jev is asked only about
+the ambiguous middle and its answer is logged next to the route that ran. With
+no Jev backend or `TYPESAFE_API_KEY` each such call is logged as
+`jev_status: fallback` at no latency cost. `export FABLE_JEV_MODE=off` restores
+the previous behaviour.
 
 ## 5.1.1
 

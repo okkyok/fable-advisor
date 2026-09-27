@@ -80,7 +80,7 @@ at `luna_high`: nothing — not Jev, not an override — routes such a task to
 `luna_low`. Two failures pin it at `claude_fable`, `--route self` included. Schema, API, migration and irreversible also return
 `consult_first: fable-advisor`: consult before committing to the design.
 
-**Jev** (`FABLE_JEV_MODE`, default `off`): `off` never touches Jev; `shadow`
+**Jev** (`FABLE_JEV_MODE`, default `shadow`): `off` never touches Jev; `shadow`
 asks Jev about the middle and logs its answer without using it; `active` uses
 Jev's answer only when its confidence is at least `FABLE_JEV_MIN_CONFIDENCE`
 (0.80) and it respects the floor — any failure, timeout or doubt falls back to

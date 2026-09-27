@@ -59,6 +59,11 @@ r=$(printf '%s' "$MIDDLE" | FABLE_JEV_MODE=shadow python3 "$T/noadapter/fable-ro
 check "adapter missing in shadow -> fallback adapter_missing" '[ "$(field "$r" jev_reason)" = adapter_missing ] && [ "$(field "$r" actual_route)" = luna_high ]' "$r"
 r=$(route bogus "$MIDDLE")
 check "unknown FABLE_JEV_MODE is treated as off" '[ "$(field "$r" jev_mode)" = off ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
+PATH="$BASE"
+r=$(printf '%s' "$MIDDLE" | python3 "$S/fable-route.py" route 2>/dev/null)
+check "unset FABLE_JEV_MODE defaults to shadow" '[ "$(field "$r" jev_mode)" = shadow ]' "$r"
+check "default shadow without a Jev backend falls back and keeps the route" '[ "$(field "$r" jev_status)" = fallback ] && [ "$(field "$r" jev_reason)" = executable_missing ] && [ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" decided_by)" = legacy ]' "$r"
+PATH="$JEVBIN:$BASE"
 
 echo "Jev shadow"
 reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.91
