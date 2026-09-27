@@ -168,6 +168,12 @@ and passes `--add-dir ~/.codex/sol-advisor` only when that directory exists.
 `codex-implementer` no longer refers to the removed `tool-bridge` and
 `failover-implementer`.
 
+**Measurement without memory.** Every lane run writes its own `attempt` row
+(status, duration, model, effort, scope violations) — with `--route-id` joined to
+its routing decision, without one as `unrouted` — and `routing-report.py` adds a
+`compliance` block that says whether the data is complete enough to judge from.
+The only manual step left is recording whether a result was accepted.
+
 **Optional (Jev).** `FABLE_JEV_MODE=shadow|active` adds Jev as a classifier for
 the ambiguous middle of implementation routing and review gating. Off by
 default; delete `scripts/jev_route.py` and everything else still works.
