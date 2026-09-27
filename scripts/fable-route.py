@@ -26,6 +26,7 @@ import sys
 import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.dont_write_bytecode = True  # importing jev_route must not litter the plugin directory
 MODES = ("off", "shadow", "active")
 
 # --- configuration: the `:=` defaults in fable-config.sh are the single source ---
