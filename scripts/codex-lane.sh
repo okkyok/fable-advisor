@@ -24,7 +24,7 @@
 #         access) · 4 timeout · 5 bad usage/blocked
 set -euo pipefail
 
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=fable-config.sh
 . "$here/fable-config.sh"
 
@@ -192,12 +192,17 @@ fi
 # A failed run that wrote nothing and names auth, quota or model access is the
 # lane being unavailable — a routing fact, not a task failure. Exit 3 so the
 # caller stops and reports instead of retrying or failing over.
+# Only codex's own error lines near the end count: the transcript also echoes the
+# prompt, and a spec about "authentication" or "rate limits" is not an outage.
 if [ "$rc" -ne 0 ] && [ -z "$touched" ]; then
-  why=$(grep -i -m1 -E 'usage limit|rate.?limit|quota|try again (at|in)|(status|http|error)[^0-9]{0,6}(401|403|429)|not logged in|log ?in required|please (log|sign) ?in|unauthori[sz]ed|authenticat|model.{0,60}(not (found|supported|available)|does not exist|unavailable|no access)|(unknown|invalid|unsupported) model' "$ERRLOG" 2>/dev/null || true)
+  why=$(tail -n 40 "$ERRLOG" 2>/dev/null \
+        | grep -iE '^[[:space:]]*(\[[^]]*\][[:space:]]*)?([a-z_-]+[[:space:]])?(error|fatal):' \
+        | grep -i -m1 -E 'usage limit|rate.?limit|quota|try again (at|in)|(status|http|error)[^0-9]{0,6}(401|403|429)|not logged in|log ?in required|please (log|sign) ?in|unauthori[sz]ed|authenticat|model.{0,60}(not (found|supported|available)|does not exist|unavailable|no access)|(unknown|invalid|unsupported) model' || true)
   if [ -n "$why" ]; then
     echo; echo "LANE REPORT"; echo "  status:   unavailable — $why"
     echo "  model:    $MODEL"; echo "  effort:   $EFFORT"; echo "  rc:       $rc"
-    cleanup; rm -f "$ERRLOG"
+    echo "  log:      $ERRLOG   (kept as evidence)"
+    cleanup
     exit 3
   fi
 fi

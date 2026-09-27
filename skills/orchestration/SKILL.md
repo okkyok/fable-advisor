@@ -73,10 +73,11 @@ judgment-dominated → `claude_fable` · one file, mechanical, verifiable, no ri
 flag, no prior failure → `luna_low`. Everything else is the ambiguous middle,
 whose deterministic answer is `luna_high`.
 
-**Risk floor.** A security, migration, schema, public-API, concurrency or
-irreversible flag, a prior failure, or no runnable verification puts the floor
+**Risk floor.** A security, migration, schema, public-API (`api_change`),
+concurrency or irreversible flag, a prior failure, no runnable verification, an
+interface change, several components, or an unknown `file_count` puts the floor
 at `luna_high`: nothing — not Jev, not an override — routes such a task to
-`luna_low`. Schema, API, migration and irreversible also return
+`luna_low`. Two failures pin it at `claude_fable`, `--route self` included. Schema, API, migration and irreversible also return
 `consult_first: fable-advisor`: consult before committing to the design.
 
 **Jev** (`FABLE_JEV_MODE`, default `off`): `off` never touches Jev; `shadow`
@@ -200,10 +201,12 @@ expensive to reverse, and whenever the same problem has resisted two attempts.
 The router applies this table: `fable-route.py review --id <route id>` with a
 review state (`file_count`, `lines_changed`, `mechanical`, `verification_passed`,
 the same risk flags, `wide_blast_radius`, `lane_disagreement`, `silence_gap`).
-Any high-risk row is `fable_review` by rule and Jev is never asked; one-file
-mechanical with passing verification is `none`; failing verification is never
-`none`. Only the ordinary middle is left to Jev (shadow/active), whose default is
-`self_review`. Jev picks a review level — it never performs the review.
+Any high-risk row, or a problem that resisted two attempts, is `fable_review` by
+rule and Jev is never asked; one-file mechanical with passing verification and
+no silence gap is `none`; failing verification is never `none`. Only the ordinary
+middle is left to Jev (shadow/active): its default is `self_review` and Jev may
+only escalate it to `fable_review` — skipping review is never Jev's call. Jev
+picks a review level; it never performs the review.
 
 **The silence gap.** Before a review, compute what the change *should* have
 touched — callers, subclasses, parallel implementations, adjacent config — and

@@ -23,11 +23,11 @@ BUCKETS = ((0.0, 0.5), (0.5, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.01))
 def load(path):
     rows = []
     try:
-        with open(path) as handle:
+        with open(path, encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 try:
                     row = json.loads(line)
-                except json.JSONDecodeError:
+                except ValueError:
                     continue
                 if isinstance(row, dict):
                     rows.append(row)
@@ -36,18 +36,34 @@ def load(path):
     return rows
 
 
+def num(value):
+    """A ledger number, or None: hand-edited rows may hold strings, bools or null."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
+def text(value):
+    return value if isinstance(value, str) else None
+
+
+def tally(values):
+    return dict(Counter(v if isinstance(v, (str, int, float, bool, type(None))) else json.dumps(v)
+                        for v in values))
+
+
 def rate(part, whole):
     return None if not whole else round(part / whole, 3)
 
 
 def mean(values):
-    values = [v for v in values if isinstance(v, (int, float))]
+    values = [v for v in (num(x) for x in values) if v is not None]
     return None if not values else round(sum(values) / len(values), 2)
 
 
 def outcome_stats(rows):
     ok = sum(1 for r in rows if r.get("outcome") == "success")
-    retried = sum(1 for r in rows if r.get("outcome") == "retry" or (r.get("attempts") or 1) > 1)
+    retried = sum(1 for r in rows if r.get("outcome") == "retry" or (num(r.get("attempts")) or 1) > 1)
     return {"n": len(rows), "success_rate": rate(ok, len(rows)), "retry_rate": rate(retried, len(rows)),
             "avg_attempts": mean([r.get("attempts") for r in rows]),
             "avg_duration_s": mean([r.get("duration_s") for r in rows])}
@@ -57,12 +73,12 @@ def report(rows):
     legacy_rows = [r for r in rows if "event" not in r]
     decisions = [r for r in rows if r.get("event") == "decision"]
     reviews = [r for r in rows if r.get("event") == "review"]
-    outcomes = {r["id"]: r for r in rows if r.get("event") == "outcome" and r.get("id")}
+    outcomes = {r["id"]: r for r in rows if r.get("event") == "outcome" and text(r.get("id"))}
 
     out = {"total_decisions": len(decisions),
-           "jev_mode": dict(Counter(r.get("jev_mode") for r in decisions)),
-           "decided_by": dict(Counter(r.get("decided_by") for r in decisions)),
-           "route_distribution": dict(Counter(r.get("actual_route") for r in decisions)),
+           "jev_mode": tally((r.get("jev_mode") for r in decisions)),
+           "decided_by": tally((r.get("decided_by") for r in decisions)),
+           "route_distribution": tally((r.get("actual_route") for r in decisions)),
            "outcomes_recorded": len(outcomes)}
 
     by_route = defaultdict(list)
@@ -71,23 +87,24 @@ def report(rows):
     out["by_route"] = {k: outcome_stats(v) for k, v in sorted(by_route.items(), key=lambda i: str(i[0]))}
     out["overall"] = outcome_stats(list(outcomes.values()))
 
-    asked = [r for r in decisions if "jev_route" in r]
+    asked = [r for r in decisions if text(r.get("jev_route"))]
     agree = sum(1 for r in asked if r["jev_route"] == r.get("legacy_route"))
     out["jev"] = {
         "consulted": sum(1 for r in decisions if r.get("jev_status") not in (None, "skipped")),
         "skipped_obvious": sum(1 for r in decisions if r.get("jev_status") == "skipped"),
-        "status": dict(Counter(r.get("jev_status") for r in decisions if r.get("jev_status"))),
-        "fallback_reasons": dict(Counter(r.get("jev_reason") for r in decisions if r.get("jev_reason"))),
+        "status": tally((r.get("jev_status") for r in decisions if r.get("jev_status"))),
+        "fallback_reasons": tally((r.get("jev_reason") for r in decisions if r.get("jev_reason"))),
         "agreement_with_legacy": rate(agree, len(asked)),
-        "disagreements": dict(Counter("%s->%s" % (r.get("legacy_route"), r["jev_route"])
+        "disagreements": tally(("%s->%s" % (r.get("legacy_route"), r["jev_route"])
                                       for r in asked if r["jev_route"] != r.get("legacy_route"))),
         "avg_latency_ms": mean([r.get("jev_latency_ms") for r in decisions]),
     }
 
     buckets = []
     for low, high in BUCKETS:
-        inside = [r for r in asked if low <= r.get("jev_confidence", -1) < high]
-        done = [outcomes[r["id"]] for r in inside if r.get("id") in outcomes]
+        inside = [r for r in asked if num(r.get("jev_confidence")) is not None
+                  and low <= r["jev_confidence"] < high]
+        done = [outcomes[r["id"]] for r in inside if text(r.get("id")) in outcomes]
         followed = [o for o in done if o.get("actual_route") == o.get("jev_route")]
         buckets.append({"confidence": "%.1f-%.1f" % (low, min(high, 1.0)), "n": len(inside),
                         "agree_legacy": rate(sum(1 for r in inside if r["jev_route"] == r.get("legacy_route")), len(inside)),
@@ -103,15 +120,15 @@ def report(rows):
             shadow["jev=%s ran=%s" % (o.get("jev_route"), o.get("actual_route"))].append(o)
     out["shadow_disagreement_outcomes"] = {k: outcome_stats(v) for k, v in sorted(shadow.items())}
 
-    review_dist = Counter(r.get("review") for r in reviews)
+    review_dist = Counter(text(r.get("review")) for r in reviews)
     out["review"] = {"total": len(reviews), "distribution": dict(review_dist),
                      "fable_review_rate": rate(review_dist.get("fable_review", 0), len(reviews)),
-                     "decided_by": dict(Counter(r.get("review_decided_by") for r in reviews)),
-                     "jev_fallback_reasons": dict(Counter(r.get("jev_reason") for r in reviews if r.get("jev_reason")))}
+                     "decided_by": tally((r.get("review_decided_by") for r in reviews)),
+                     "jev_fallback_reasons": tally((r.get("jev_reason") for r in reviews if r.get("jev_reason")))}
     if legacy_rows:
         out["pre_5_1_records"] = {"n": len(legacy_rows),
-                                  "by_lane": dict(Counter(r.get("lane") for r in legacy_rows)),
-                                  "outcome": dict(Counter(r.get("outcome") for r in legacy_rows))}
+                                  "by_lane": tally((r.get("lane") for r in legacy_rows)),
+                                  "outcome": tally((r.get("outcome") for r in legacy_rows))}
     return out
 
 

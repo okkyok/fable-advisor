@@ -121,6 +121,21 @@ r=$(route off "$MIDDLE" --route sol_high)
 check "caller may choose sol_high explicitly" '[ "$(field "$r" actual_route)/$(field "$r" decided_by)" = sol_high/caller ]' "$r"
 r=$(route off '{"file_count":2,"schema_change":true,"verification_available":true}')
 check "schema change asks for a fable-advisor consult first" '[ "$(field "$r" consult_first)" = fable-advisor ]' "$r"
+reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.91
+r=$(route active '{"file_count":9,"interface_change":true,"multi_component":true,"verification_available":true}')
+check "interface/multi-component work cannot be sent to luna_low by Jev" '[ "$(field "$r" actual_route)/$(field "$r" floor)" = luna_high/luna_high ]' "$r"
+r=$(route active '{"objective":"unknown size","verification_available":true}')
+check "unknown file_count keeps the floor at luna_high" '[ "$(field "$r" actual_route)" = luna_high ]' "$r"
+r=$(route off '{"file_count":3,"prior_failures":2,"verification_available":true}' --route luna_high)
+check "after two failures an override below claude_fable is refused" '[ "$(field "$r" actual_route)" = claude_fable ] && [ "$(field "$r" override_rejected)" = below_risk_floor ]' "$r"
+r=$(route off '{"file_count":3,"prior_failures":2,"verification_available":true}' --route self)
+check "after two failures --route self is refused too" '[ "$(field "$r" actual_route)" = claude_fable ]' "$r"
+r=$(route off "$MIDDLE" --route self)
+check "--route self is honoured otherwise" '[ "$(field "$r" actual_route)" = self ]' "$r"
+r=$(route shadow "$RISKY")
+check "shadow keeps an off-list Jev answer visible in the ledger" '[ "$(field "$r" jev_route)/$(field "$r" jev_reason)" = luna_low/unknown_choice ] && [ "$(field "$r" actual_route)" = luna_high ]' "$r"
+r=$(FABLE_JEV_TIMEOUT=inf route active "$MIDDLE")
+check "unbounded FABLE_JEV_TIMEOUT is clamped, routing continues" '[ -n "$(field "$r" actual_route)" ] && grep -q "FABLE_JEV_TIMEOUT" "$T/stderr"' "$r"
 
 echo "Jev input is minimal"
 reset_jev; export STUB_CHOICE=luna_high STUB_CONF=0.9
@@ -142,10 +157,16 @@ v=$(review off '{"file_count":3,"verification_passed":true}')
 check "ordinary change -> self_review (off)" '[ "$(field "$v" review)" = self_review ]' "$v"
 v=$(STUB_CHOICE=fable_review STUB_CONF=0.95 review active '{"file_count":3,"lines_changed":240,"verification_passed":true}')
 check "ambiguous middle: confident Jev escalates to fable_review" '[ "$(field "$v" review)/$(field "$v" review_decided_by)" = fable_review/jev ]' "$v"
-v=$(STUB_CHOICE=none STUB_CONF=0.5 review active '{"file_count":3,"verification_passed":true}')
+v=$(STUB_CHOICE=fable_review STUB_CONF=0.5 review active '{"file_count":3,"verification_passed":true}')
 check "ambiguous middle: unsure Jev -> self_review" '[ "$(field "$v" review)" = self_review ] && [ "$(field "$v" jev_reason)" = low_confidence ]' "$v"
 v=$(review active '{"file_count":1,"mechanical":true,"verification_passed":false}')
 check "failing verification never gets review none" '[ "$(field "$v" review)" = self_review ]' "$v"
+STUB_CHOICE=none STUB_CONF=0.99 v=$(review active '{"file_count":60,"lines_changed":4000,"verification_passed":true}')
+check "Jev can never skip review (none is not offered in the middle)" '[ "$(field "$v" review)" = self_review ] && [ "$(field "$v" jev_reason)" = unknown_choice ]' "$v"
+v=$(review active '{"file_count":2,"verification_passed":true,"attempts":3}')
+check "resisted two attempts -> fable_review by rule" '[ "$(field "$v" review)/$(field "$v" review_decided_by)" = fable_review/rule ]' "$v"
+v=$(review off '{"file_count":1,"mechanical":true,"verification_passed":true,"silence_gap":2}')
+check "a silence gap rules out review none" '[ "$(field "$v" review)" = self_review ]' "$v"
 
 echo "Ledger and report"
 reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.91
@@ -159,6 +180,15 @@ check "report runs and shows agreement, buckets, route stats" 'grep -q agreement
 check "report reads pre-5.1 ledger lines" 'grep -q pre_5_1_records <<<"$rep"' "$rep"
 j=$(python3 "$S/routing-report.py" --json)
 check "report --json is valid JSON" 'python3 -c "import json,sys; json.loads(sys.argv[1])" "$j"'
+{ echo '{"event":"decision","id":"x1","jev_route":"luna_low","jev_confidence":null,"legacy_route":"luna_high"}'
+  echo '{"event":"decision","id":"x2","jev_route":"luna_low","jev_confidence":"high"}'
+  echo '{"event":"outcome","id":["a"],"attempts":"2","outcome":"success"}'
+  echo '{"event":"outcome","id":"x3","attempts":true,"jev_mode":["weird"]}'
+  echo '[1,2,3]'; echo '"a string"'; printf '\xff\xfe broken utf8\n'; } >> "$FABLE_LEDGER"
+python3 "$S/routing-report.py" >/dev/null 2>"$T/rep-err"; rc=$?
+check "report survives malformed ledger rows" '[ $rc -eq 0 ]' "$(cat "$T/rep-err")"
+o=$(python3 "$S/fable-route.py" outcome --id "$id" --outcome retry --attempts 2 2>&1); rc=$?
+check "outcome still records against a malformed ledger" '[ $rc -eq 0 ] && [ "$(field "$o" legacy_route)" = luna_high ]' "$o"
 
 echo "Codex lane"
 PATH="$CODEXBIN:$BASE"
@@ -210,6 +240,11 @@ out=$(STUB_CODEX=quota "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py 
 check "quota exhaustion -> exit 3 with the reset message, worktree removed" '[ $rc -eq 3 ] && grep -q "Try again at" <<<"$out" && [ "$(git -C "$REPO" worktree list | wc -l)" -eq "$n0" ]' "$out"
 out=$(STUB_CODEX=badmodel "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" --model gpt-9 2>/dev/null); rc=$?
 check "model not available to the account -> exit 3" '[ $rc -eq 3 ]' "$out"
+printf 'Objective: add authentication retry and rate limit handling; respect quota.\nFiles: src/calc.py\n' > "$T/spec-auth"
+out=$(STUB_CODEX=crash "$S/codex-lane.sh" --spec "$T/spec-auth" --files src/calc.py --repo "$REPO" 2>/dev/null); rc=$?
+check "a spec about auth/rate limits is not misread as codex unavailable" '[ $rc -eq 1 ]' "$out"
+out=$(STUB_CODEX=quota "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" 2>/dev/null)
+check "exit 3 keeps the log as evidence" '[ -f "$(awk "/log:/{print \$2; exit}" <<<"$out")" ]' "$out"
 out=$(STUB_CODEX=nothing "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" 2>/dev/null); rc=$?
 check "empty diff -> exit 1, worktree removed" '[ $rc -eq 1 ] && [ "$(git -C "$REPO" worktree list | wc -l)" -eq "$n0" ]' "$out"
 out=$(STUB_CODEX=sleep "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" --timeout 1 2>/dev/null); rc=$?

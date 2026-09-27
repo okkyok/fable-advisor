@@ -66,6 +66,17 @@ def min_confidence():
     return math.inf
 
 
+def jev_timeout():
+    try:
+        value = float(os.environ["FABLE_JEV_TIMEOUT"])
+        if 0 < value <= 60:
+            return value
+    except ValueError:
+        pass
+    warn("FABLE_JEV_TIMEOUT must be in (0, 60]; using 8")
+    return 8.0
+
+
 # --- decision state -------------------------------------------------------------
 
 # Everything Jev may ever see is on these lists. Unknown keys are dropped, so
@@ -144,7 +155,7 @@ ROUTE_QUESTION = ("Which implementation route does this coding task need? "
                   "Judge only from the task characteristics given.")
 REVIEWS = ("none", "self_review", "fable_review")
 REVIEW_OPTIONS = {
-    "none": "Trivial change fully proven by its passing verification command.",
+    "none": "Trivial change fully proven by its passing verification command.",  # rule-only
     "self_review": "Ordinary change; the verification plus a re-read of the diff is enough.",
     "fable_review": "Wide blast radius or hidden risk that warrants an independent senior review.",
 }
@@ -183,13 +194,26 @@ def deterministic_route(s):
 
 
 def route_floor(s):
-    """The cheapest route nothing — Jev or caller — may go below."""
-    if high_risk(s) or s.get("prior_failures", 0) >= 1 or not flag(s, "verification_available"):
+    """The cheapest route nothing — Jev or caller — may go below.
+
+    Two failures pin claude_fable. Anything that keeps a task off the
+    mechanical_one_file rule (a risk flag, a failure, no verification, an
+    interface change, several components, an unknown size) also keeps Jev and
+    the caller off luna_low.
+    """
+    if s.get("prior_failures", 0) >= 2:
+        return "claude_fable"
+    if (high_risk(s) or s.get("prior_failures", 0) >= 1 or not flag(s, "verification_available")
+            or flag(s, "interface_change") or flag(s, "multi_component") or s.get("file_count") is None):
         return "luna_high"
     return "luna_low"
 
 
 def below(route, floor):
+    # `self` is outside the ranking: the orchestrator may take any task itself,
+    # except one that has already failed twice (that belongs to claude_fable).
+    if route == "self":
+        return floor == "claude_fable"
     return route in RANKED and RANKED.index(route) < RANKED.index(floor)
 
 
@@ -197,11 +221,19 @@ def deterministic_review(s):
     risks = high_risk(s) + [k for k in ("wide_blast_radius", "lane_disagreement") if flag(s, k)]
     if risks:
         return "fable_review", "high_risk:" + ",".join(risks), True
+    if s.get("attempts", 1) >= 2:
+        return "fable_review", "resisted_two_attempts", True
     if not flag(s, "verification_passed"):
         return "self_review", "verification_not_passed", True
-    if flag(s, "mechanical") and s.get("file_count") is not None and s["file_count"] <= 1:
+    if (flag(s, "mechanical") and s.get("file_count") is not None and s["file_count"] <= 1
+            and not s.get("silence_gap")):
         return "none", "one_file_mechanical_verified", True
     return "self_review", "ordinary", False
+
+
+# `none` is only ever a rule outcome. In the middle Jev may keep self_review or
+# escalate to fable_review — never skip review; that would be the fail-open.
+REVIEW_JEV_OPTIONS = {k: v for k, v in REVIEW_OPTIONS.items() if k != "none"}
 
 
 # --- the Jev layer: reached only in shadow/active, only for the ambiguous middle ---
@@ -218,13 +250,15 @@ def consult_jev(mode, question, state, options):
     except Exception:
         return {"jev_status": "fallback", "jev_reason": "adapter_missing"}, None
     try:
-        result = jev_route.classify(question, state, options,
-                                    float(os.environ["FABLE_JEV_TIMEOUT"]))
+        result = jev_route.classify(question, state, options, jev_timeout())
     except Exception:
         result = {"ok": False, "reason": "adapter_error"}
     fields = {"jev_backend": result.get("backend")}
     if not result.get("ok"):
-        fields.update(jev_status="fallback", jev_reason=result.get("reason") or "error")
+        # Keep whatever Jev did answer (e.g. an off-list choice) so the
+        # disagreement stays visible in the report.
+        fields.update(jev_status="fallback", jev_reason=result.get("reason") or "error",
+                      jev_route=result.get("choice"), jev_confidence=result.get("confidence"))
         return fields, None
     choice, confidence = result["choice"], result["confidence"]
     fields.update(jev_route=choice, jev_confidence=round(confidence, 4),
@@ -250,7 +284,7 @@ def consult_jev(mode, question, state, options):
 
 def ledger_path():
     path = os.environ["FABLE_LEDGER"]
-    return None if path.strip().lower() in ("off", "") else os.path.expanduser(path)
+    return None if path.strip().lower() == "off" else os.path.expanduser(path)
 
 
 def append(record):
@@ -275,12 +309,14 @@ def read_ledger():
     if not path or not os.path.exists(path):
         return []
     records = []
-    with open(path) as handle:
+    with open(path, encoding="utf-8", errors="replace") as handle:
         for line in handle:
             try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
+                record = json.loads(line)
+            except ValueError:
                 continue
+            if isinstance(record, dict):  # a hand-edited or foreign line is skipped, not fatal
+                records.append(record)
     return records
 
 
@@ -349,7 +385,7 @@ def cmd_review(args, text):
         if obvious:
             record["jev_status"] = "skipped"
         else:
-            fields, choice = consult_jev(mode, REVIEW_QUESTION, state, REVIEW_OPTIONS)
+            fields, choice = consult_jev(mode, REVIEW_QUESTION, state, REVIEW_JEV_OPTIONS)
             record.update(fields)
             if choice is not None:
                 actual, decided_by = choice, "jev"

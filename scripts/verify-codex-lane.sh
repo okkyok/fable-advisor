@@ -3,7 +3,7 @@
 # The worktree mechanism was verified against a stub codex on 2026-09-10; stage 3
 # is the same mechanism driven by the real CLI.
 set -uo pipefail
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 . "$here/fable-config.sh"   # the model probed is the one lanes will use
 TO=$(command -v gtimeout || command -v timeout || true)
 [ -n "$TO" ] || { echo "needs gtimeout or timeout (macOS: brew install coreutils)"; exit 1; }

@@ -109,7 +109,12 @@ def classify(question, state, options, timeout):
     if not isinstance(choice, str):
         return _fail("malformed", name, started)
     if choice not in options:
-        return _fail("unknown_choice", name, started)
+        failure = _fail("unknown_choice", name, started)
+        failure["choice"] = choice[:40]
+        if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) \
+                and math.isfinite(confidence):
+            failure["confidence"] = round(float(confidence), 4)
+        return failure
     if confidence is None:
         return _fail("no_confidence", name, started)
     if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) \

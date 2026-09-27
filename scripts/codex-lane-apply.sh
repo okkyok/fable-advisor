@@ -58,5 +58,5 @@ if [ "$RM" = 1 ] && [ "$DRY" = 0 ]; then
 else
   echo "worktree kept: $WT"
   echo "  inspect leftovers:  git -C '$WT' status --short"
-  echo "  discard when done:  git -C '$REPO' worktree remove --force '$WT'"
+  echo "  discard when done:  git -C '$REPO' worktree remove --force '$WT'; rm -f '$WT.codex-stderr.log'"
 fi

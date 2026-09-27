@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stub `codex` for tests/run.sh. Records its argv, then behaves per STUB_CODEX:
-#   fix (default) · violation · nothing · quota · badmodel · sleep
+#   fix (default) · violation · nothing · quota · badmodel · sleep · crash (echoes the prompt, then fails)
 # For fix/violation it writes every path on the spec's "Files:" line, relative
 # to --cd — exactly where the real CLI would write.
 set -u
@@ -20,6 +20,7 @@ case "${STUB_CODEX:-fix}" in
   quota)    echo "ERROR: You've hit your usage limit. Try again at 3:05 PM." >&2; exit 1 ;;
   badmodel) echo "ERROR: The model 'gpt-9' does not exist or you do not have access to it." >&2; exit 1 ;;
   sleep)    sleep 30; exit 0 ;;
+  crash)    printf '%s\n' "$spec" >&2; echo "ERROR: internal panic in tool runner" >&2; exit 1 ;;
   nothing)  echo "done" > "$out"; exit 0 ;;
 esac
 [ -n "${STUB_DELAY:-}" ] && sleep "$STUB_DELAY"

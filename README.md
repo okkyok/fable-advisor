@@ -51,7 +51,7 @@ decision state ──► hard rules ──obvious──────────�
                                                   │
                         review hard rules ──obvious──► none / self_review / fable_review
                                                   │
-                                      ambiguous ──► Jev (same gate) ──► self_review / fable_review / none
+                                      ambiguous ──► Jev (same gate) ──► self_review / fable_review
 ```
 
 | Route | Runs as | For |
@@ -69,7 +69,9 @@ the router sends it a whitelisted decision state (objective ≤ 280 chars, file
 count, risk flags, prior failures, verification availability) and drops every
 other key. Rules still own the obvious cases — Jev is not called for them — and
 the high-risk rules (security, data migration, schema, public API, concurrency,
-irreversible, two failures) cannot be overridden by any Jev answer.
+irreversible, two failures) cannot be overridden by any Jev answer. In review
+gating Jev can only escalate (`self_review` → `fable_review`); `none` is a rule
+outcome for verified one-file mechanical changes, never a Jev answer.
 
 Settings live in one file, [`scripts/fable-config.sh`](scripts/fable-config.sh),
 all as environment variables:
