@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Stub for both `semdecide` and `jev` (jev-cli), selected by argv[0].
+
+STUB_JEV: ok (default) | malformed | noconf | sleep | exit:<n>
+STUB_CHOICE / STUB_CONF set the answer. Every call touches STUB_JEV_MARK and
+saves its stdin (the decision state) and argv to STUB_JEV_LOG.
+"""
+import json, os, sys, time
+name = os.path.basename(sys.argv[0])
+state = sys.stdin.read()
+if os.environ.get("STUB_JEV_MARK"):
+    open(os.environ["STUB_JEV_MARK"], "a").write(name + "\n")
+if os.environ.get("STUB_JEV_LOG"):
+    json.dump({"argv": sys.argv[1:], "stdin": state}, open(os.environ["STUB_JEV_LOG"], "w"))
+mode = os.environ.get("STUB_JEV", "ok")
+if mode.startswith("exit:"):
+    print(json.dumps({"ok": False, "error": "stub failure"}), file=sys.stderr)
+    sys.exit(int(mode[5:]))
+if mode == "sleep":
+    time.sleep(30)
+if mode == "malformed":
+    print("this is not json")
+    sys.exit(0)
+answer = {"type": "choice", "choice": os.environ.get("STUB_CHOICE", "luna_low"),
+          "probabilities": {}, "confidence": float(os.environ.get("STUB_CONF", "0.91"))}
+if mode == "noconf":
+    del answer["confidence"]
+if name == "semdecide":
+    print(json.dumps(dict(answer, schema_version="1", command="choose")))
+else:
+    print(json.dumps({"answers": {"answer": answer}, "model": "jev-stub"}))

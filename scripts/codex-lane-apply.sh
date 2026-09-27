@@ -54,6 +54,7 @@ if [ "$RM" = 1 ] && [ "$DRY" = 0 ]; then
   git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 \
     && echo "worktree removed: $WT" \
     || echo "worktree NOT removed (remove manually): $WT"
+  rm -f "$WT.codex-stderr.log"   # codex-lane.sh keeps the transcript beside the worktree
 else
   echo "worktree kept: $WT"
   echo "  inspect leftovers:  git -C '$WT' status --short"
