@@ -8,14 +8,17 @@
     fable-route.py backfill --model M --effort E --file-count N ...   (codex-lane.sh, no --route-id)
     fable-route.py config
 
-Routing policy 5.4.0 (POLICY_VERSION, written on every new ledger row):
+This file is the routing policy. The orchestration skill describes roles and
+judgment; every rule, floor, eligibility check and Jev gate lives here only.
+Route ids are stable names; the models behind them are configuration
+(fable-config.sh, and the agents' own `effort:` pins for Claude-side roles):
 
-    luna_low          codex gpt-6-luna  low    mechanical, one file, verified, no risk
-    luna_high         codex gpt-6-luna  high   ordinary implementation (the default)
-    luna_max          codex gpt-6-luna  max    narrow retry after one failure (eligibility-gated)
-    sol_high          codex gpt-6-sol   high   broad / integration-heavy work
-    claude_opus_high  implementer opus  high   two failures, or judgment a spec cannot carry
-    Fable             consult_first / fable_review only, never an implementation route
+    luna_low          default worker, low effort    mechanical, one file, verified, no risk
+    luna_high         default worker                ordinary implementation (the default)
+    luna_max          default worker, max effort    narrow retry after one failure (gated)
+    sol_high          broad worker                  several interacting components
+    claude_opus_high  senior worker (implementer)   two failures, or judgment a spec cannot carry
+    Fable             frontier advisor: consult_first / fable_review, never implements
 
 Obvious cases are decided by rules in this file and never reach Jev. Only the
 ambiguous middle does, and only when FABLE_JEV_MODE is shadow or active. With
@@ -36,8 +39,9 @@ import re
 import sys
 import uuid
 
-POLICY_VERSION = "5.4.0"  # bump whenever routes, rules, floors or Jev options change
+POLICY_VERSION = "5.5.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
 HERE = os.path.dirname(os.path.abspath(__file__))
+AGENTS_DIR = os.path.join(os.path.dirname(HERE), "agents")
 sys.dont_write_bytecode = True  # importing jev_route must not litter the plugin directory
 MODES = ("off", "shadow", "active")
 
@@ -106,6 +110,9 @@ ROUTE_FIELDS = {
     # Fable-consult signals. Also rule-only: they send the task to fable-advisor
     # before any implementation, never to Jev.
     "architectural_deadlock": bool, "opus_failed": bool,
+    # Scope mode for the worker. Rule-only: it changes how a lane is run, not
+    # which route, so it is never sent to Jev.
+    "strict_scope": bool,
 }
 REVIEW_FIELDS = {
     "objective": str, "file_count": int, "lines_changed": int, "mechanical": bool,
@@ -118,10 +125,13 @@ REVIEW_FIELDS = {
 }
 CLAUDE_SIDE = ("context_bound", "below_spawn_floor", "judgment_dominated", "claude_only_tool")
 # Keys decided by rule alone and never part of what Jev sees.
-ROUTE_RULE_ONLY = CLAUDE_SIDE + ("architectural_deadlock", "opus_failed")
+ROUTE_RULE_ONLY = CLAUDE_SIDE + ("architectural_deadlock", "opus_failed", "strict_scope")
 REVIEW_RULE_ONLY = ("architectural_deadlock", "opus_review_inconclusive")
 HIGH_RISK = ("security_sensitive", "data_migration", "schema_change", "api_change",
              "concurrency_sensitive", "irreversible")
+# Where an exhaustive file allowlist is worth the lost autonomy. Everything else
+# runs with Files as the expected scope (see codex-lane.sh).
+STRICT_SCOPE_RISKS = ("security_sensitive", "data_migration", "irreversible")
 OBJECTIVE_MAX = 280
 
 
@@ -198,22 +208,39 @@ REVIEW_QUESTION = "What review does this finished, verified change need before i
 LUNA_MAX_MAX_FILES = 3
 
 
+def agent_effort(agent):
+    """The effort a Claude-side agent actually runs at: its frontmatter pin.
+
+    The Agent tool takes a model per spawn but no effort, and no environment
+    variable sets a subagent's effort, so the `effort:` line in agents/<agent>.md
+    is the only switch that takes effect. Reading it here makes the ledger
+    record what ran — change the pin (e.g. high -> medium) and the next rows say
+    so. No pin means the subagent inherits the session's effort: "inherit".
+    """
+    try:
+        with open(os.path.join(AGENTS_DIR, agent + ".md"), encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return None
+    front = text.split("\n---", 1)[0] if text.startswith("---") else ""
+    match = re.search(r"^effort:\s*([A-Za-z]+)\s*$", front, re.M)
+    return match.group(1) if match else "inherit"
+
+
 def lane_for(route):
     model = os.environ["FABLE_CODEX_DEFAULT_MODEL"]
     return {
         "self": {"lane": "self"},
-        "luna_low": {"lane": "codex-implementer", "model": model, "effort": "low"},
-        "luna_high": {"lane": "codex-implementer", "model": model,
+        "luna_low": {"lane": "codex-implementer", "role": "default_worker", "model": model, "effort": "low"},
+        "luna_high": {"lane": "codex-implementer", "role": "default_worker", "model": model,
                       "effort": os.environ["FABLE_CODEX_DEFAULT_EFFORT"]},
-        "luna_max": {"lane": "codex-implementer", "model": model, "effort": "max"},
-        "sol_high": {"lane": "codex-implementer", "model": os.environ["FABLE_CODEX_STRONG_MODEL"],
-                     "effort": "high"},
-        # `opus` is the Claude Code alias for the latest Opus (Opus 5.5 in Claude
-        # Code 2.1.283's model catalog) and one of the values the Agent tool's
-        # per-spawn `model` accepts. Effort cannot be set on a spawn: it comes from
-        # agents/implementer.md's `effort: high` pin, recorded here so the ledger
-        # says what ran.
-        "claude_opus_high": {"lane": "implementer", "model": "opus", "effort": "high"},
+        "luna_max": {"lane": "codex-implementer", "role": "deep_worker", "model": model, "effort": "max"},
+        "sol_high": {"lane": "codex-implementer", "role": "broad_worker",
+                     "model": os.environ["FABLE_CODEX_STRONG_MODEL"], "effort": "high"},
+        # The model is passed on the spawn (it outranks frontmatter); the effort
+        # can only come from the agent file's pin, so it is read from there.
+        "claude_opus_high": {"lane": "implementer", "role": "senior_worker",
+                             "model": os.environ["FABLE_SENIOR_MODEL"], "effort": agent_effort("implementer")},
     }[route]
 
 
@@ -221,9 +248,29 @@ def review_lane_for(review):
     return {
         "none": {},
         "self_review": {"reviewer": "self"},
-        "opus_review": {"reviewer": "opus-reviewer", "reviewer_model": "opus", "reviewer_effort": "high"},
-        "fable_review": {"reviewer": "fable-advisor", "reviewer_model": "fable"},
+        "opus_review": {"reviewer": "opus-reviewer", "reviewer_role": "senior_reviewer",
+                        "reviewer_model": os.environ["FABLE_SENIOR_MODEL"],
+                        "reviewer_effort": agent_effort("opus-reviewer")},
+        "fable_review": {"reviewer": "fable-advisor", "reviewer_role": "frontier_advisor",
+                         "reviewer_model": os.environ["FABLE_FRONTIER_MODEL"],
+                         "reviewer_effort": agent_effort("fable-advisor")},
     }[review]
+
+
+def strict_scope_reason(s):
+    """Why this task's Files must be an exhaustive allowlist, or None."""
+    if flag(s, "strict_scope"):
+        return "requested"
+    risks = [k for k in STRICT_SCOPE_RISKS if flag(s, k)]
+    return ",".join(risks) if risks else None
+
+
+def lane_args(record):
+    """The codex-lane.sh flags that carry this decision, so no one retypes them."""
+    if record.get("lane") != "codex-implementer":
+        return None
+    args = "--model %s --effort %s --route-id %s" % (record["model"], record["effort"], record["id"])
+    return args + (" --strict-scope" if record.get("strict_scope") else "")
 
 
 def failures(s):
@@ -500,8 +547,12 @@ def cmd_route(args, text):
         record.update(consult_first="fable-advisor", consult_reason=reason)
     if flag(state, "claude_only_tool"):
         record["tool_bridge"] = True  # run the tool op Claude-side; the lane keeps the code
+    strict = strict_scope_reason(state)
+    if strict and actual != "self":
+        record.update(strict_scope=True, strict_scope_reason=strict)
     append(record)
-    lane_text = " ".join(str(lane[k]) for k in ("lane", "model", "effort") if k in lane)
+    record["lane_args"] = lane_args(record)
+    lane_text = " ".join(str(lane[k]) for k in ("lane", "model", "effort") if lane.get(k))
     record["declare"] = "route: %s (%s) -> %s" % (actual, decided_by if decided_by != "rule" else rule, lane_text)
     if ignored:
         record["ignored_keys"] = ignored
@@ -563,13 +614,30 @@ def cmd_backfill(args):
     emit(record)
 
 
+def lane_verification(route_id):
+    """The acceptance result codex-lane.sh recorded for this id (last run), or None."""
+    result = None
+    for rec in read_ledger():
+        if rec.get("id") == route_id and rec.get("event") == "attempt" and rec.get("verify") in ("pass", "fail"):
+            result = rec["verify"]
+    return result
+
+
 def cmd_review(args, text):
     state, ignored = parse_state(text, REVIEW_FIELDS)
+    # The harness already ran the acceptance command on a codex lane; use its
+    # result rather than asking anyone to restate it. A stated value wins.
+    source = "caller" if "verification_passed" in state else None
+    if source is None and args.id:
+        verdict = lane_verification(args.id)
+        if verdict:
+            state["verification_passed"], source = verdict == "pass", "lane"
     mode = jev_mode()
     legacy, rule, obvious = deterministic_review(state)
     record = {"event": "review", "id": args.id or uuid.uuid4().hex[:12], "ts": now(),
               "policy_version": POLICY_VERSION,
-              "task": args.task, "jev_mode": mode, "legacy_review": legacy, "rule": rule}
+              "task": args.task, "jev_mode": mode, "legacy_review": legacy, "rule": rule,
+              "verification_source": source}
     actual, decided_by = legacy, "rule" if obvious else "legacy"
     if mode != "off":
         if obvious:
@@ -586,13 +654,14 @@ def cmd_review(args, text):
     record["declare"] = "review: %s (%s)%s" % (
         actual, decided_by if decided_by != "rule" else rule,
         " -> " + " ".join(str(reviewer[k]) for k in ("reviewer", "reviewer_model", "reviewer_effort")
-                          if k in reviewer) if reviewer else "")
+                          if reviewer.get(k)) if reviewer else "")
     if ignored:
         record["ignored_keys"] = ignored
     emit(record)
 
 
 OUTCOMES = ("success", "retry", "failover", "blocked", "unavailable", "timeout")
+VERDICTS = ("ship", "fix_first", "rethink", "escalate")
 
 
 LANE_STATUSES = ("ok", "empty_diff", "unavailable", "timeout", "blocked", "error")
@@ -607,7 +676,9 @@ def cmd_attempt(args):
               "model": args.model, "effort": args.effort, "touched": args.touched,
               "scope_violations": args.violations,
               "reason": args.reason[:200] if args.reason else None,
-              "unrouted": True if args.unrouted else None}
+              "unrouted": True if args.unrouted else None,
+              "strict_scope": True if args.strict_scope else None,
+              "verify": args.verify, "verify_s": args.verify_s}
     append(record)
     emit(record)
 
@@ -629,7 +700,8 @@ def cmd_outcome(args):
     if not decision:
         record["policy_version"] = POLICY_VERSION
     for key, value in review.items():
-        if key in ("legacy_review", "review", "review_decided_by", "reviewer", "reviewer_model"):
+        if key in ("legacy_review", "review", "review_decided_by", "reviewer", "reviewer_model",
+                   "reviewer_effort", "reviewer_role"):
             record[key] = value
         elif key.startswith("jev_"):
             record["review_" + key] = value
@@ -638,8 +710,11 @@ def cmd_outcome(args):
                     if isinstance(a.get("duration_s"), (int, float)) and not isinstance(a.get("duration_s"), bool)]
     count = args.attempts if args.attempts is not None else (len(attempts) or 1)
     duration = args.duration if args.duration is not None else (sum(lane_seconds) if lane_seconds else None)
+    verified = [a["verify"] for a in attempts if a.get("verify") in ("pass", "fail")]
     record.update(event="outcome", id=args.id, ts=now(), outcome=args.outcome,
-                  attempts=count, duration_s=duration, note=args.note)
+                  attempts=count, duration_s=duration, note=args.note,
+                  verify=verified[-1] if verified else None,
+                  review_verdict=args.verdict, review_findings=args.findings)
     append(record)
     emit(record)
 
@@ -679,6 +754,8 @@ def main(argv=None):
     o.add_argument("--attempts", type=int, default=None, help="default: lane attempts recorded for the id")
     o.add_argument("--duration", type=float, default=None, help="default: their summed duration")
     o.add_argument("--note", default=None)
+    o.add_argument("--verdict", default=None, choices=VERDICTS, help="the reviewer's verdict, if reviewed")
+    o.add_argument("--findings", type=int, default=None, help="how many review findings survived")
     a = sub.add_parser("attempt", help="record one lane run (codex-lane.sh does this)")
     a.add_argument("--id", required=True)
     a.add_argument("--lane-status", required=True, choices=LANE_STATUSES)
@@ -690,6 +767,9 @@ def main(argv=None):
     a.add_argument("--violations", type=int, default=None)
     a.add_argument("--reason", default=None)
     a.add_argument("--unrouted", action="store_true", help="the lane ran without a route id")
+    a.add_argument("--strict-scope", action="store_true")
+    a.add_argument("--verify", default=None, choices=("pass", "fail", "not_run"))
+    a.add_argument("--verify-s", type=float, default=None)
     b = sub.add_parser("backfill", help="record a decision for a lane run without a route id (codex-lane.sh does this)")
     b.add_argument("--model", required=True)
     b.add_argument("--effort", required=True)

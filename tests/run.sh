@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034,SC2209  # variables are read inside check's eval strings
-# Offline test suite: routing policy 5.4.0 (luna_max eligibility, claude_opus_high
-# escalation, Fable consult triggers), Jev modes and fallbacks, review gate
-# (self/opus/fable), ledger and the policy-versioned report, backfill, and the
-# codex lane's model/effort parameters and isolation.
+# Offline test suite: routing policy 5.5.0 (luna_max eligibility, claude_opus_high
+# escalation, Fable consult triggers, strict scope), Jev modes and fallbacks,
+# review gate (self/opus/fable), ledger and the policy-versioned report,
+# backfill, the codex lane's model/effort, expected/strict scope, harness
+# acceptance and apply guards, isolation, and prompt-surface budgets.
 # Uses stub `codex`, `semdecide` and `jev` binaries; needs no network, no
 # credentials, and no real Codex or Jev install. Run: tests/run.sh
 set -uo pipefail
@@ -207,7 +208,7 @@ assert set(m.REVIEW_JEV_OPTIONS)=={\"self_review\",\"opus_review\"}
 printf '%s' "$MIDDLE" | python3 "$S/fable-route.py" route --route claude_fable >/dev/null 2>"$T/stderr"; rc=$?
 check "--route claude_fable is refused with a pointer to its replacement" '[ $rc -eq 2 ] && grep -q claude_opus_high "$T/stderr"' "$(cat "$T/stderr")"
 r=$(route off "$MIDDLE")
-check "every new decision carries policy_version 5.4.0" '[ "$(field "$r" policy_version)" = 5.4.0 ] && [ "$(field "$(last_line)" policy_version)" = 5.4.0 ]' "$r"
+check "every new decision carries policy_version 5.5.0" '[ "$(field "$r" policy_version)" = 5.5.0 ] && [ "$(field "$(last_line)" policy_version)" = 5.5.0 ]' "$r"
 reset_jev; export STUB_CHOICE=luna_high STUB_CONF=0.9
 route active '{"file_count":2,"verification_available":true,"prior_failures":1,"opus_failed":false,"architectural_deadlock":false,"judgment_dominated":false}' >/dev/null
 sent=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stdin"])' "$STUB_JEV_LOG")
@@ -248,7 +249,7 @@ v=$(review active '{"file_count":5,"lines_changed":900,"verification_passed":tru
 check "Jev review options are self_review/opus_review only" '[ "$(offered)" = "self_review opus_review" ]' "$(offered)"
 check "Jev cannot choose fable_review, even at 0.99" '[ "$(field "$v" review)|$(field "$v" jev_reason)" = "self_review|unknown_choice" ]' "$v"
 v=$(STUB_CHOICE=opus_review review shadow '{"file_count":5,"lines_changed":900,"verification_passed":true}')
-check "shadow review: Jev's opus_review is logged, review stays self_review" '[ "$(field "$v" review)|$(field "$v" jev_route)|$(field "$v" jev_status)|$(field "$v" policy_version)" = "self_review|opus_review|shadow|5.4.0" ]' "$v"
+check "shadow review: Jev's opus_review is logged, review stays self_review" '[ "$(field "$v" review)|$(field "$v" jev_route)|$(field "$v" jev_status)|$(field "$v" policy_version)" = "self_review|opus_review|shadow|5.5.0" ]' "$v"
 
 echo "Ledger and report"
 reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.91
@@ -271,7 +272,7 @@ python3 "$S/routing-report.py" >/dev/null 2>"$T/rep-err"; rc=$?
 check "report survives malformed ledger rows" '[ $rc -eq 0 ]' "$(cat "$T/rep-err")"
 o=$(python3 "$S/fable-route.py" outcome --id "$id" --outcome retry --attempts 2 2>&1); rc=$?
 check "outcome still records against a malformed ledger" '[ $rc -eq 0 ] && [ "$(field "$o" legacy_route)" = luna_high ]' "$o"
-check "an outcome inherits its decision's policy_version" '[ "$(field "$o" policy_version)" = 5.4.0 ]' "$o"
+check "an outcome inherits its decision's policy_version" '[ "$(field "$o" policy_version)" = 5.5.0 ]' "$o"
 echo '{"event":"decision","id":"pre54","legacy_route":"claude_fable","actual_route":"claude_fable","lane":"implementer","model":"fable"}' >> "$FABLE_LEDGER"
 o=$(python3 "$S/fable-route.py" outcome --id pre54 --outcome success 2>&1)
 check "an outcome on a pre-5.4 decision stays unversioned (historical), route kept" '[ -z "$(field "$o" policy_version)" ] && [ "$(field "$o" actual_route)" = claude_fable ]' "$o"
@@ -306,26 +307,44 @@ MIX="$T/mixed.jsonl"
   echo '{"event":"outcome","id":"new4","policy_version":"5.4.0","actual_route":"claude_opus_high","outcome":"success","attempts":1,"duration_s":600}'
   echo '{"event":"review","id":"new4","policy_version":"5.4.0","legacy_review":"opus_review","review":"opus_review","rule":"resisted_two_attempts"}'
   echo '{"event":"attempt","id":"unrouted-1-2","policy_version":"5.4.0","unrouted":true,"lane_status":"ok","duration_s":30,"model":"gpt-6-luna","effort":"xhigh"}'
+  # v5.5 rows: the current policy, which must not absorb any 5.4 evidence
+  echo '{"event":"decision","id":"n55","policy_version":"5.5.0","legacy_route":"claude_opus_high","actual_route":"claude_opus_high","jev_mode":"shadow","jev_status":"skipped","lane":"implementer","model":"opus","effort":"medium"}'
+  echo '{"event":"outcome","id":"n55","policy_version":"5.5.0","actual_route":"claude_opus_high","model":"opus","effort":"medium","outcome":"success","attempts":1,"duration_s":300,"reviewer":"opus-reviewer","reviewer_model":"opus","reviewer_effort":"medium","review_verdict":"fix_first","review_findings":2}'
+  echo '{"event":"decision","id":"n56","policy_version":"5.5.0","legacy_route":"luna_high","actual_route":"luna_high","jev_mode":"shadow","jev_status":"shadow","jev_route":"luna_high","jev_confidence":0.9,"lane":"codex-implementer","model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"attempt","id":"n56","policy_version":"5.5.0","lane_status":"ok","verify":"fail","duration_s":90,"model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"attempt","id":"n56","policy_version":"5.5.0","lane_status":"ok","verify":"pass","duration_s":60,"model":"gpt-6-luna","effort":"high"}'
 } > "$MIX"
 rep=$(python3 "$S/routing-report.py" --ledger "$MIX" --json 2>&1); rc=$?
-check "report reads a mixed v5.3/v5.4 ledger (historical claude_fable rows included)" '[ $rc -eq 0 ]' "$rep"
-check "policy_version_distribution separates pre-5.4 from 5.4.0" 'python3 -c "
+check "report reads a mixed v5.3/v5.4/v5.5 ledger (historical claude_fable rows included)" '[ $rc -eq 0 ]' "$rep"
+check "policy_version_distribution separates pre-5.4, 5.4.0 and 5.5.0" 'python3 -c "
 import json,sys; d=json.loads(sys.argv[1]); p=d[\"policy_version_distribution\"]
-assert p[\"decision\"]=={\"pre-5.4\":3,\"5.4.0\":4}, p
-assert p[\"attempt\"]=={\"pre-5.4\":2,\"5.4.0\":6}, p   # a 5.3 decision keeps its late 5.4-stamped attempt
-assert set(d[\"by_policy_version\"])=={\"pre-5.4\",\"5.4.0\"} and d[\"current_policy_version\"]==\"5.4.0\"
+assert p[\"decision\"]=={\"pre-5.4\":3,\"5.4.0\":4,\"5.5.0\":2}, p
+assert p[\"attempt\"]=={\"pre-5.4\":2,\"5.4.0\":6,\"5.5.0\":2}, p   # a 5.3 decision keeps its late 5.4-stamped attempt
+assert set(d[\"by_policy_version\"])=={\"pre-5.4\",\"5.4.0\",\"5.5.0\"} and d[\"current_policy_version\"]==\"5.5.0\"
 " "$rep"' "$rep"
-check "headline Jev stats are current-policy only" 'python3 -c "
-import json,sys; d=json.loads(sys.argv[1]); c=d[\"current_policy\"]; old=d[\"by_policy_version\"][\"pre-5.4\"]
+check "headline Jev stats are current-policy only; every policy keeps its own section" 'python3 -c "
+import json,sys; d=json.loads(sys.argv[1]); cur=d[\"current_policy\"]; c=d[\"by_policy_version\"][\"5.4.0\"]; old=d[\"by_policy_version\"][\"pre-5.4\"]
+assert cur==d[\"by_policy_version\"][\"5.5.0\"] and cur[\"total_decisions\"]==2 and cur[\"jev\"][\"consulted\"]==1, cur[\"jev\"]
+assert cur[\"jev\"][\"agreement_with_legacy\"]==1.0, cur[\"jev\"]
 assert c[\"jev\"][\"consulted\"]==3 and old[\"jev\"][\"consulted\"]==2, (c[\"jev\"], old[\"jev\"])
 assert c[\"jev\"][\"agreement_with_legacy\"]==0.0 and old[\"jev\"][\"agreement_with_legacy\"]==0.5, (c[\"jev\"], old[\"jev\"])
 assert c[\"jev\"][\"jev_recommendation_distribution\"]=={\"luna_max\":1,\"claude_opus_high\":1,\"sol_high\":1}, c[\"jev\"]
 assert \"claude_fable\" not in c[\"route_distribution\"] and old[\"route_distribution\"][\"claude_fable\"]==1
-assert c==d[\"by_policy_version\"][\"5.4.0\"] and \"note\" in d[\"historical_all\"] and d[\"historical_all\"][\"total_decisions\"]==7
+assert \"note\" in d[\"historical_all\"] and d[\"historical_all\"][\"total_decisions\"]==9
 assert c[\"review\"][\"distribution\"]=={\"opus_review\":1} and old[\"review\"][\"distribution\"]=={\"fable_review\":1}
 " "$rep"' "$rep"
+check "5.5 report: acceptance pass rates, outcomes and review results per model/effort" 'python3 -c "
+import json,sys; c=json.loads(sys.argv[1])[\"current_policy\"]
+l=c[\"lane_attempts\"][\"by_route\"][\"luna_high\"]
+assert l[\"verify_first_pass\"]==0.0 and l[\"verify_eventually_pass\"]==1.0, l
+assert c[\"by_model_effort\"][\"gpt-6-luna/high\"][\"verify_pass_rate\"]==0.5, c[\"by_model_effort\"]
+o=c[\"outcomes_by_model_effort\"][\"claude_opus_high opus/medium\"]
+assert o[\"n\"]==1 and o[\"success_rate\"]==1.0, c[\"outcomes_by_model_effort\"]
+r=c[\"review\"][\"results_by_reviewer\"][\"opus-reviewer opus/medium\"]
+assert r[\"avg_findings\"]==2 and r[\"verdicts\"]=={\"fix_first\":1}, r
+" "$rep"' "$rep"
 check "shadow counterfactuals distinguish the new routes" 'python3 -c "
-import json,sys; c=json.loads(sys.argv[1])[\"current_policy\"]; l=c[\"shadow_disagreement_lanes\"]
+import json,sys; c=json.loads(sys.argv[1])[\"by_policy_version\"][\"5.4.0\"]; l=c[\"shadow_disagreement_lanes\"]
 assert l[\"jev=luna_max ran=luna_high\"][\"first_try_ok\"]==0.0 and l[\"jev=luna_max ran=luna_high\"][\"retry_rate\"]==1.0, l
 assert l[\"jev=luna_max ran=luna_high\"][\"would_accept_in_active\"]==1, l
 assert l[\"jev=claude_opus_high ran=luna_max\"][\"timeout_rate\"]==1.0, l
@@ -333,7 +352,7 @@ assert \"jev=sol_high ran=sol_high\" not in l
 assert c[\"shadow_disagreement_outcomes\"][\"jev=claude_opus_high ran=luna_max\"][\"success_rate\"]==1.0
 " "$rep"' "$rep"
 check "route stats carry p50/p90/timeout; by_model_effort keeps real pairs" 'python3 -c "
-import json,sys; c=json.loads(sys.argv[1])[\"current_policy\"]; r=c[\"lane_attempts\"][\"by_route\"]
+import json,sys; c=json.loads(sys.argv[1])[\"by_policy_version\"][\"5.4.0\"]; r=c[\"lane_attempts\"][\"by_route\"]
 assert r[\"luna_max\"][\"p90_lane_s\"]==970 and r[\"luna_max\"][\"timeout_rate\"]==1.0 and r[\"luna_high\"][\"p50_lane_s\"]==500, r
 m=c[\"by_model_effort\"]
 assert set(m)=={\"gpt-6-luna/high\",\"gpt-6-luna/max\",\"gpt-6-sol/high\",\"gpt-6-luna/xhigh\"}, m
@@ -503,7 +522,7 @@ check "luna xhigh backfill is unmapped, never folded into luna_high" '[ "$(field
 discard "$out"
 out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --effort high 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")
-check "luna high backfill -> luna_high, policy_version on decision and attempt" '[ "$(field "$d" actual_route)|$(field "$d" policy_version)|$(field "$(last_attempt)" policy_version)" = "luna_high|5.4.0|5.4.0" ]' "$d"
+check "luna high backfill -> luna_high, policy_version on decision and attempt" '[ "$(field "$d" actual_route)|$(field "$d" policy_version)|$(field "$(last_attempt)" policy_version)" = "luna_high|5.5.0|5.5.0" ]' "$d"
 discard "$out"
 out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --effort low 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")
@@ -533,13 +552,107 @@ assert \"jev=sol_high ran=luna_high\" in d[\"shadow_disagreement_lanes\"], d[\"s
 " "$rep"' "$rep"
 PATH="$CODEXBIN:$BASE"; reset_jev
 
-echo "Isolation"
-REPO="$T/repo2"; mkrepo "$REPO"
+echo "Scope: expected by default, strict on request"
+REPO="$T/repo2"; mkrepo "$REPO"; rm -f "$STUB_ARGV_DIR"/*
 out=$(STUB_CODEX=violation "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" 2>/dev/null)
 wt=$(awk '/worktree:/{print $2; exit}' <<<"$out")
-check "scope violation is reported" 'grep -A1 "SCOPE VIOLATIONS" <<<"$out" | grep -q docs/README.md' "$out"
-"$S/codex-lane-apply.sh" --worktree "$wt" --repo "$REPO" --files src/calc.py --remove >/dev/null
-check "violating path is not applied; uncommitted work intact" 'grep -q "OTHER LANE UNCOMMITTED WORK" "$REPO/docs/README.md" && ! grep -q stray "$REPO/docs/README.md"'
+check "codex gets the harness preamble and the expected-scope rule before the spec" 'p=$(cat "$STUB_ARGV_DIR"/prompt.*) && grep -q "Harness notes" <<<"$p" && grep -q "expected scope" <<<"$p" && grep -q NEED_TOOL <<<"$p" && [ "$(grep -n "^Files: src/calc.py" <<<"$p" | cut -d: -f1)" -gt "$(grep -n "Harness notes" <<<"$p" | cut -d: -f1)" ]' "$(cat "$STUB_ARGV_DIR"/prompt.* 2>/dev/null)"
+check "an out-of-scope path codex did not name is reported as not applied" 'grep -A1 "OUTSIDE EXPECTED SCOPE" <<<"$out" | grep -q "docs/README.md.*not named: not applied"' "$out"
+"$S/codex-lane-apply.sh" --worktree "$wt" --repo "$REPO" --remove >/dev/null
+check "apply without --files lands the scope, not the unnamed path; uncommitted work intact" 'grep -q "a + b" "$REPO/src/calc.py" && grep -q "OTHER LANE UNCOMMITTED WORK" "$REPO/docs/README.md" && ! grep -q stray "$REPO/docs/README.md" && [ ! -e "$wt" ] && [ ! -e "$wt.lane" ]'
+
+REPO="$T/repo4"; mkrepo "$REPO"
+rid=$(field "$(route off '{"objective":"x","file_count":1,"verification_available":true}')" id)
+out=$(STUB_CODEX=extra "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" --route-id "$rid" 2>/dev/null)
+wt=$(awk '/worktree:/{print $2; exit}' <<<"$out")
+check "an adjacent file codex names is reported as applied" 'grep -q "src/helper.py.*named by codex: applied" <<<"$out"' "$out"
+a=$(grep "\"id\":\"$rid\"" "$FABLE_LEDGER" | grep '"event":"attempt"' | tail -n 1)
+check "attempt row counts the out-of-scope path (same field as 5.4)" '[ "$(field "$a" scope_violations)" = 1 ] && [ -z "$(field "$a" strict_scope)" ]' "$a"
+"$S/codex-lane-apply.sh" --worktree "$wt" --repo "$REPO" --remove >/dev/null; rc=$?
+check "default scope: the named adjacent file lands with the lane" '[ $rc -eq 0 ] && [ -f "$REPO/src/helper.py" ] && grep -q "a + b" "$REPO/src/calc.py"'
+
+REPO="$T/repo5"; mkrepo "$REPO"; rm -f "$STUB_ARGV_DIR"/*
+out=$(STUB_CODEX=extra "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" --strict-scope --route-id "$rid" 2>/dev/null)
+wt=$(awk '/worktree:/{print $2; exit}' <<<"$out")
+check "strict scope: codex is told the strict rule" 'grep -q "Strict scope" "$STUB_ARGV_DIR"/prompt.*'
+check "strict scope: even a named extra path is a violation" 'grep -A1 "SCOPE VIOLATIONS" <<<"$out" | grep -q src/helper.py' "$out"
+a=$(grep "\"id\":\"$rid\"" "$FABLE_LEDGER" | grep '"event":"attempt"' | tail -n 1)
+check "strict scope is recorded on the attempt" '[ "$(field "$a" strict_scope)" = True ]' "$a"
+res=$("$S/codex-lane-apply.sh" --worktree "$wt" --repo "$REPO" --files src/calc.py,src/helper.py --remove 2>&1); rc=$?
+check "strict scope: apply refuses the extra path even when named in --files, keeps the worktree" '[ $rc -eq 7 ] && grep -q "refused (strict scope): src/helper.py" <<<"$res" && [ ! -e "$REPO/src/helper.py" ] && grep -q "a + b" "$REPO/src/calc.py" && [ -d "$wt" ]' "$res"
+discard "$out"; rm -f "$wt.lane" "$wt.prompt"
+
+echo "Acceptance verification runs once, in the harness"
+REPO="$T/repo6"; mkrepo "$REPO"
+rid=$(field "$(route off '{"objective":"x","file_count":1,"verification_available":true}')" id)
+out=$("$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" --route-id "$rid" --verify "grep -q 'a + b' src/calc.py" 2>/dev/null); rc=$?
+a=$(grep "\"id\":\"$rid\"" "$FABLE_LEDGER" | grep '"event":"attempt"' | tail -n 1)
+check "passing acceptance: exit 0, report and attempt row say pass" '[ $rc -eq 0 ] && grep -q "verify:   pass" <<<"$out" && [ "$(field "$a" verify)|$(field "$a" lane_status)" = "pass|ok" ] && [ -n "$(field "$a" verify_s)" ]' "$out $a"
+v=$(printf '{}' | FABLE_JEV_MODE=off python3 "$S/fable-route.py" review --id "$rid")
+check "review gate takes verification from the lane's acceptance run" '[ "$(field "$v" verification_source)" = lane ] && [ "$(field "$v" review)" = self_review ] && [ "$(field "$v" rule)" = ordinary ]' "$v"
+discard "$out"; rm -f "$(awk '/worktree:/{print $2; exit}' <<<"$out").lane"
+out=$("$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" --route-id "$rid" --verify "echo acceptance-output; exit 3" 2>/dev/null); rc=$?
+wt=$(awk '/worktree:/{print $2; exit}' <<<"$out")
+a=$(grep "\"id\":\"$rid\"" "$FABLE_LEDGER" | grep '"event":"attempt"' | tail -n 1)
+check "failing acceptance: exit 6, output tail shown, worktree kept, lane_status still codex's own" '[ $rc -eq 6 ] && grep -q "verify:   FAIL" <<<"$out" && grep -q acceptance-output <<<"$out" && [ -d "$wt" ] && [ "$(field "$a" verify)|$(field "$a" lane_status)" = "fail|ok" ]' "$out $a"
+v=$(printf '{"file_count":1,"mechanical":true}' | FABLE_JEV_MODE=off python3 "$S/fable-route.py" review --id "$rid")
+check "a failed lane acceptance never gets review none" '[ "$(field "$v" review)|$(field "$v" rule)|$(field "$v" verification_source)" = "self_review|verification_not_passed|lane" ]' "$v"
+v=$(printf '{"file_count":1,"mechanical":true,"verification_passed":true}' | FABLE_JEV_MODE=off python3 "$S/fable-route.py" review --id "$rid")
+check "a stated verification_passed wins over the ledger" '[ "$(field "$v" verification_source)" = caller ]' "$v"
+before=$(cat "$REPO/src/calc.py")
+res=$("$S/codex-lane-apply.sh" --worktree "$wt" --repo "$REPO" --remove 2>&1); rc=$?
+check "apply refuses a lane whose acceptance failed; nothing written" '[ $rc -eq 6 ] && [ "$(cat "$REPO/src/calc.py")" = "$before" ] && [ -d "$wt" ]' "$res"
+res=$("$S/codex-lane-apply.sh" --worktree "$wt" --repo "$REPO" --remove --force 2>&1); rc=$?
+check "apply --force lands it anyway" '[ $rc -eq 0 ] && grep -q "a + b" "$REPO/src/calc.py"' "$res"
+o=$(python3 "$S/fable-route.py" outcome --id "$rid" --outcome success --verdict fix_first --findings 2)
+check "outcome records the last acceptance result and the review verdict/findings" '[ "$(field "$o" verify)|$(field "$o" review_verdict)|$(field "$o" review_findings)" = "fail|fix_first|2" ]' "$o"
+
+echo "Apply never overwrites newer main-tree work"
+REPO="$T/repo7"; mkrepo "$REPO"
+out=$("$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" 2>/dev/null)
+wt=$(awk '/worktree:/{print $2; exit}' <<<"$out")
+echo "# edited in the main tree after the lane started" >> "$REPO/src/calc.py"
+res=$("$S/codex-lane-apply.sh" --worktree "$wt" --repo "$REPO" --remove 2>&1); rc=$?
+check "a path changed in the main tree since seeding is a conflict: skipped, worktree kept" '[ $rc -eq 7 ] && grep -q "CONFLICT.*src/calc.py" <<<"$res" && grep -q "edited in the main tree" "$REPO/src/calc.py" && [ -d "$wt" ]' "$res"
+discard "$out"; rm -f "$wt.lane" "$wt.prompt"
+out=$(STUB_CODEX=commit "$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" 2>/dev/null); rc=$?
+check "a codex that commits in its worktree is not misread as an empty diff" '[ $rc -eq 0 ] && grep -A1 "touched:" <<<"$out" | grep -q src/mul.py' "$out"
+discard "$out"
+out=$(STUB_CODEX=sleep "$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" --timeout 1 2>/dev/null); rc=$?
+check "timeout: the lane prints codex's handoff file itself" '[ $rc -eq 4 ] && grep -A2 "handoff:" <<<"$out" | grep -q "NEXT: write src/calc.py"' "$out"
+discard "$out"
+
+echo "Routing 5.5: strict scope, lane args, model roles"
+PATH="$BASE"
+r=$(route off '{"objective":"Rotate session tokens","file_count":3,"security_sensitive":true,"verification_available":true}')
+check "security-sensitive work runs under strict scope, and lane_args carry it" '[ "$(field "$r" strict_scope)|$(field "$r" strict_scope_reason)" = "True|security_sensitive" ] && grep -q -- "--strict-scope" <<<"$(field "$r" lane_args)" && grep -q -- "--route-id $(field "$r" id)" <<<"$(field "$r" lane_args)"' "$r"
+r=$(route off "$MIDDLE")
+check "ordinary work: expected scope, no strict flag" '[ -z "$(field "$r" strict_scope)" ] && ! grep -q strict <<<"$(field "$r" lane_args)" && [ "$(field "$r" role)" = default_worker ]' "$r"
+r=$(route off '{"file_count":2,"verification_available":true,"strict_scope":true}')
+check "strict_scope can be requested explicitly, without changing the route" '[ "$(field "$r" strict_scope_reason)|$(field "$r" actual_route)" = "requested|luna_high" ]' "$r"
+PATH="$JEVBIN:$BASE"; reset_jev; export STUB_CHOICE=luna_high STUB_CONF=0.9
+route active '{"file_count":4,"verification_available":true,"strict_scope":true}' >/dev/null
+check "strict_scope is never sent to Jev" '! grep -q strict_scope "$STUB_JEV_LOG"' "$(cat "$STUB_JEV_LOG")"
+reset_jev; PATH="$BASE"
+r=$(FABLE_SENIOR_MODEL=sonnet route off '{"file_count":3,"prior_failures":2}')
+check "the senior worker's model is configuration, not code" '[ "$(field "$r" model)|$(field "$r" role)" = "sonnet|senior_worker" ]' "$r"
+PLUG="$T/plugin"; mkdir -p "$PLUG"; cp -R "$ROOT/scripts" "$ROOT/agents" "$PLUG/"
+sed -i.bak 's/^effort: high$/effort: medium/' "$PLUG/agents/implementer.md" "$PLUG/agents/opus-reviewer.md"
+r=$(printf '%s' '{"file_count":3,"prior_failures":2}' | FABLE_JEV_MODE=off python3 "$PLUG/scripts/fable-route.py" route)
+v=$(printf '%s' '{"file_count":3,"irreversible":true,"verification_passed":true}' | FABLE_JEV_MODE=off python3 "$PLUG/scripts/fable-route.py" review)
+check "Opus effort is read from the agent pin: medium there is medium in the ledger" '[ "$(field "$r" effort)|$(field "$v" reviewer_effort)" = "medium|medium" ]' "$r $v"
+check "the shipped pins are high (5.4-comparable default)" '[ "$(field "$(route off '"'"'{"file_count":3,"prior_failures":2}'"'"')" effort)" = high ]'
+PATH="$CODEXBIN:$BASE"
+
+echo "Prompt surfaces"
+pb=$(python3 "$S/prompt-budget.py" --json); rc=$?
+check "prompt-budget runs; the normal codex path stays under 4k Claude-side tokens" '[ $rc -eq 0 ] && python3 -c "
+import json,sys; n=json.loads(sys.argv[1])[\"now\"]
+assert n[\"normal_task_claude_tokens\"] < 4000, n[\"normal_task_claude_tokens\"]
+assert n[\"paths\"][\"implement_codex\"][\"codex\"] > 0   # the lane preamble is measured, not hidden
+" "$pb"' "$pb"
+check "prompt-budget compares against a git revision" 'python3 "$S/prompt-budget.py" --ref HEAD >/dev/null'
+check "no model versions in prompts: a model update is a config change" '! grep -nE "GPT-6|gpt-6|Opus 5|Fable 5|Luna|Sol\b" "$ROOT/skills/orchestration/SKILL.md" "$ROOT"/agents/*.md' "$(grep -nE "GPT-6|gpt-6|Opus 5|Fable 5|Luna|Sol\b" "$ROOT/skills/orchestration/SKILL.md" "$ROOT"/agents/*.md)"
 
 echo "Concurrent lanes"
 REPO="$T/repo3"; mkrepo "$REPO"; spec src/mul.py "$T/spec2"

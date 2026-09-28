@@ -10,8 +10,9 @@ when it does, it runs on Claude Opus 5.5. Fable is kept for what only it is for:
 questioning the approach when everything else has stalled.
 
 Every Codex lane runs in its own disposable git worktree, so a lane cannot reach
-the main tree or another lane's tree, scope violations are reported instead of
-landing, and undoing a lane is `git worktree remove` rather than a `git checkout`
+the main tree or another lane's tree, a spec's Files are the expected scope
+(strict only where it matters), the harness runs the acceptance command itself,
+nothing lands over newer main-tree work, and undoing a lane is `git worktree remove` rather than a `git checkout`
 that takes a co-resident lane's uncommitted work with it. Reviews are sized to
 blast radius rather than applied to everything.
 
@@ -115,7 +116,18 @@ all as environment variables:
 | `FABLE_CODEX_DEFAULT_MODEL` | `gpt-6-luna` | the codex default; change models here, not in scripts |
 | `FABLE_CODEX_DEFAULT_EFFORT` | `high` | the `luna_high` effort; keep it `high` (`luna_low` and `luna_max` fix their own) |
 | `FABLE_CODEX_STRONG_MODEL` | `gpt-6-sol` | the `sol_high` model |
+| `FABLE_SENIOR_MODEL` | `opus` | the senior worker (`claude_opus_high`) and senior reviewer (`opus_review`), passed as the spawn's `model` |
+| `FABLE_FRONTIER_MODEL` | `fable` | the frontier advisor (`consult_first`, `fable_review`) |
 | `FABLE_LEDGER` | `~/.claude/fable-advisor/routing.jsonl` | `off` disables the ledger |
+
+Claude-side **effort** is not an environment variable: the Agent tool takes no
+effort per spawn and Claude Code has no variable for subagent effort, so the only
+switch that takes effect is the `effort:` line in `agents/implementer.md`
+(senior worker) and `agents/opus-reviewer.md` (senior reviewer). The router reads
+those pins into every ledger row, so changing one from `high` to `medium` is
+the whole experiment: `routing-report.py` shows `outcomes_by_model_effort`
+(e.g. `claude_opus_high opus/medium` beside `opus/high`) and
+`review.results_by_reviewer` (verdicts and findings per reviewer model/effort).
 
 **Jev answers (shadow or active)** need one existing OSS CLI and a TypeSafe key —
 neither is needed for `off`, and without them shadow logs each ambiguous case as
@@ -182,13 +194,15 @@ caller reroutes; it never silently substitutes a different model.
 | `agents/implementer` | Claude-side implementation. Depth chosen on the spawn: `model: haiku` / `sonnet` / `opus` (`claude_opus_high`), effort pinned `high`. |
 | `scripts/fable-route.py` | The routing policy as code (`POLICY_VERSION`): hard rules, risk floor, `luna_max` eligibility, Fable consult triggers, review gate, ledger. Optional Jev layer behind `FABLE_JEV_MODE`. |
 | `scripts/fable-config.sh` | Every setting, as an environment variable with a safe default. |
+| `scripts/lane-preamble.md` | What codex reads before every spec: no delegation, the handoff file, NEED_TOOL, acceptance. Sent by `codex-lane.sh`, so no caller pastes it. |
+| `scripts/prompt-budget.py` | Estimated tokens per prompt surface and per execution path (normal codex task, senior worker, review, Fable), against any git revision with `--ref`. |
 | `scripts/jev_route.py` | The only Jev-specific file: a typed-choice adapter over semdecide / jev-cli. Never imported when Jev is off. |
 | `scripts/routing-report.py` | Ledger summary per policy version: route and model/effort success, retries, p50/p90 duration and timeouts; Jev recommendations, agreement, confidence buckets and shadow counterfactuals. |
-| `scripts/codex-lane.sh` | Runs a Codex lane inside an isolated worktree with `--model`/`--effort` from the caller, and reports what it touched, including paths outside its spec. With `--route-id` it records every run in the ledger itself. |
-| `scripts/codex-lane-apply.sh` | Copies only the spec'd paths back into the main tree. Purely additive — never checkout/reset/clean/stash. |
+| `scripts/codex-lane.sh` | Runs a Codex lane inside an isolated worktree with `--model`/`--effort` from the caller, runs the acceptance command (`--verify`), and reports what it touched, inside and outside the expected scope (`--strict-scope` makes Files an allowlist). With `--route-id` it records every run in the ledger itself. |
+| `scripts/codex-lane-apply.sh` | Lands a lane in the main tree: its scope plus any extra path codex named, never a strict-scope violation, never a lane that failed acceptance (without `--force`), never over a file the main tree changed since the lane started. Purely additive — never checkout/reset/clean/stash. |
 | `scripts/verify-codex-lane.sh` | End-to-end check: runs a real lane against a scratch repo and asserts a co-resident lane's uncommitted work survives. |
-| `tests/run.sh` | Offline suite (stub codex and Jev): routing in all three modes, every fallback, hard rules, `luna_max` eligibility, Opus escalation, Fable consult triggers, review gate, ledger, policy-versioned report, backfill, lane model/effort, isolation, concurrent lanes. |
-| `agents/opus-reviewer` | `opus_review`: read-only senior reviewer (Opus 5.5, effort `high`), two-pass review with the silence gap. |
+| `tests/run.sh` | Offline suite (stub codex and Jev): routing in all three modes, every fallback, hard rules, `luna_max` eligibility, Opus escalation, Fable consult triggers, review gate, ledger, policy-versioned report, backfill, lane model/effort, expected/strict scope, harness acceptance, apply guards, isolation, concurrent lanes, prompt budgets. |
+| `agents/opus-reviewer` | `opus_review`: read-only senior reviewer (Opus, effort pinned `high`), fresh-context review with the silence gap; a second pass only when needed. |
 | `agents/fable-advisor` | Read-only frontier consult and exceptional reviewer (Fable 5): reframes stuck problems, never implements. Holds no write tools, so "advises only" is mechanical rather than aspirational. |
 
 ## The routing policy in one paragraph
@@ -201,7 +215,8 @@ keep failing or the design is deadlocked it is consulted to reframe the problem,
 and a lane implements what comes back. Write a
 five-part spec — objective, files, interfaces, constraints, verification — and
 run the lane through `codex-lane.sh`; anything you leave out, the lane invents,
-and anything it writes outside **Files** stays in the worktree. Codex *quota*
+and Files is the expected scope — an extra file lands only if the lane names it,
+and never under `strict_scope`. Codex *quota*
 exhaustion stops and reports rather than failing over to Claude, because failing
 over spends the scarce subscription exactly when the abundant one is unavailable.
 A codex *timeout* does not move lanes — it resumes against the same worktree.
@@ -209,6 +224,72 @@ Review in proportion to blast radius — Opus for risk, Fable only when the
 review itself is contested — and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
+
+## 5.5.0
+
+**Thin control plane: policy as code, goals as prompts (policy 5.5.0).** The
+routes, rules, floors and Jev's options are unchanged. What changed is where
+policy lives: rules that a script can guarantee moved out of the prompts, and
+the prompts now carry goals, constraints and acceptance criteria rather than a
+walk-through of the model's reasoning.
+
+- **Prompts.** The orchestration skill holds roles, the five Claude-side
+  reasons, the two routing choices left to judgment (`sol_high`, `luna_max`),
+  the failure table and the review principles; every rule the router enforces
+  is described only in `fable-route.py`. `codex-implementer` loses its codex
+  preflight (the lane detects an unusable codex and exits `3`), the spec
+  boilerplate (now `scripts/lane-preamble.md`, sent by the lane) and the flag
+  reference. No prompt names a model version; models are configuration.
+  Measured with `scripts/prompt-budget.py --ref 50fe90c` (the 5.4.0 commit), a normal codex-routed task
+  carries about 71% fewer Claude-side instruction tokens (≈10.2k → ≈2.9k), and
+  the descriptions loaded every turn 45% fewer.
+- **Scope.** Files is the *expected* scope: codex may change an adjacent file
+  the objective needs, and it lands when codex's final message names it (an
+  unnamed one is reported and left behind). `strict_scope` — set by the router
+  for security-sensitive, data-migration and irreversible work, or requested in
+  the state — makes Files an allowlist, enforced by `codex-lane-apply.sh`. The
+  attempt row's `scope_violations` still counts paths outside Files in both
+  modes, so it stays comparable with 5.4.
+- **Acceptance.** `codex-lane.sh --verify <cmd>` runs the acceptance command in
+  the worktree after codex exits (exit `6` on failure, worktree kept) and
+  records `verify` on the attempt row. The supervisor no longer re-runs it, the
+  orchestrator re-runs only when other work landed in the main tree meanwhile or
+  the worker was Claude-side, and `fable-route.py review --id` takes
+  `verification_passed` from the lane when the state omits it. `lane_status`
+  keeps its 5.4 meaning (codex's own result); acceptance is a separate field.
+- **Apply guards.** `codex-lane-apply.sh` without `--files` lands what the scope
+  allows, refuses a lane whose acceptance failed (unless `--force`), and skips
+  any file the main tree changed after the lane started (exit `7`, worktree
+  kept) — which is what makes an expected scope safe beside other lanes. The
+  lane also diffs against its recorded baseline, so a codex that commits in its
+  worktree is no longer read as an empty diff, and prints codex's handoff file
+  itself on a timeout.
+- **Review.** Fresh context stays: the reviewer gets goal, constraints, diff,
+  acceptance result and silence gap. The second pass with the implementer's
+  claims is now conditional (a contradicted claim, a disputed withdrawal, or
+  stakes that justify it) instead of mandatory.
+- **Measurement.** Decision rows carry `role`; codex decisions print
+  `lane_args`; attempt rows add `verify`, `verify_s` and `strict_scope`;
+  `outcome` takes `--verdict` and `--findings`. The Claude-side effort is read
+  from the agent's `effort:` pin, so an Opus `medium` vs `high` comparison is a
+  one-line change with honest ledger rows. The report adds
+  `verify_first_pass`/`verify_eventually_pass` per route, `verify_pass_rate` per
+  model/effort, `outcomes_by_model_effort` and `review.results_by_reviewer`.
+
+**Jev.** Unchanged: `off`/`shadow`/`active`, the same options, question and
+decision state (`strict_scope` is rule-only and never sent). Because the lane
+prompt, scope and acceptance changed, outcomes are not comparable across the
+boundary, so 5.5.0 is its own `policy_version` and the report keeps it apart
+from 5.4.0 and `pre-5.4`. Judge `active` on 5.5.0 rows only.
+
+**Compatibility.** Route ids, the router's CLI and output fields, the ledger
+format, `FABLE_*` variables and every existing `codex-lane.sh` /
+`codex-lane-apply.sh` invocation keep working; the new flags are optional.
+Callers of `codex-implementer` that send `MODEL:`/`EFFORT:`/`ROUTE_ID:` lines
+still work. Behaviour changes to know about: a lane run with `--files` now
+treats them as the expected scope (use `--strict-scope`, or the router's
+`lane_args`, for the old allowlist), and its report says `OUTSIDE EXPECTED
+SCOPE` where it said `SCOPE VIOLATIONS`.
 
 ## 5.4.0
 

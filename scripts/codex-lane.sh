@@ -15,6 +15,21 @@
 # usage: codex-lane.sh --spec <file> --files <f1,f2,...>
 #                      [--model gpt-6-luna] [--effort high] [--repo <path>] [--timeout 570]
 #                      [--route-id <id from fable-route.py route>]
+#                      [--verify '<acceptance command>'] [--strict-scope]
+#
+# --files is the lane's expected scope. By default codex may also change a file
+# outside it when the objective needs it, provided its final message names the
+# file; such paths are applied, unnamed ones are not. --strict-scope (the
+# router's `strict_scope: true`) refuses every path outside --files, here and in
+# codex-lane-apply.sh.
+#
+# --verify runs the acceptance command in the worktree after codex exits and
+# records pass/fail. codex-lane-apply.sh refuses to land a lane whose
+# verification failed unless --force. This is the final acceptance run; the
+# supervising agent does not repeat it.
+#
+# Every spec is sent to codex behind scripts/lane-preamble.md (no delegation,
+# the handoff file, NEED_TOOL, acceptance), so no caller has to paste it.
 #
 # --model / --effort default to FABLE_CODEX_DEFAULT_MODEL / FABLE_CODEX_DEFAULT_EFFORT
 # (scripts/fable-config.sh). Changing the default model is a config change, never
@@ -24,6 +39,7 @@
 # stdout: codex's last message, then a LANE REPORT block.
 # exit:   0 ok · 1 empty diff · 3 codex unavailable (missing, auth, quota, model
 #         access, or no network to the API) · 4 timeout · 5 bad usage/blocked
+#         · 6 acceptance verification failed (worktree kept)
 #
 # Every run — whichever exit it takes — appends an "attempt" row to the routing
 # ledger (status, rc, duration, model, effort, touched, scope violations), so
@@ -40,6 +56,7 @@ here=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 . "$here/fable-config.sh"
 
 SPEC="" FILES="" MODEL="$FABLE_CODEX_DEFAULT_MODEL" EFFORT="$FABLE_CODEX_DEFAULT_EFFORT" REPO="" TMO=570 ROUTE_ID=""
+VERIFY="" STRICT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --spec)    SPEC="$2"; shift 2 ;;
@@ -49,6 +66,8 @@ while [ $# -gt 0 ]; do
     --repo)    REPO="$2"; shift 2 ;;
     --timeout) TMO="$2"; shift 2 ;;
     --route-id) ROUTE_ID="$2"; shift 2 ;;
+    --verify)  VERIFY="$2"; shift 2 ;;
+    --strict-scope) STRICT=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 5 ;;
   esac
 done
@@ -60,7 +79,7 @@ esac
 # LANE_STATUS is set just before each deliberate exit; anything else is derived
 # from the exit code. Recording never changes the lane's own exit status, and a
 # missing python3 or an unwritable ledger only costs the row.
-LANE_STATUS="" N_TOUCHED="" N_VIOL="" WHY="" UNROUTED=""
+LANE_STATUS="" N_TOUCHED="" N_VIOL="" WHY="" UNROUTED="" VERIFY_RESULT="" VERIFY_S=""
 if [ -z "$ROUTE_ID" ]; then
   ROUTE_ID="unrouted-$(date +%s)-$$" UNROUTED=1
 fi
@@ -73,11 +92,12 @@ record_attempt() {
   python3 "$here/fable-route.py" attempt --id "$ROUTE_ID" --lane-status "$status" \
     --rc "$rc" --duration "$SECONDS" --model "$MODEL" --effort "$EFFORT" \
     ${N_TOUCHED:+--touched "$N_TOUCHED"} ${N_VIOL:+--violations "$N_VIOL"} \
-    ${WHY:+--reason "$WHY"} ${UNROUTED:+--unrouted} >/dev/null 2>&1 || true
+    ${WHY:+--reason "$WHY"} ${UNROUTED:+--unrouted} ${STRICT:+--strict-scope} \
+    ${VERIFY_RESULT:+--verify "$VERIFY_RESULT"} ${VERIFY_S:+--verify-s "$VERIFY_S"} >/dev/null 2>&1 || true
 }
 trap 'record_attempt $?' EXIT
 [ -f "$SPEC" ] || { echo "--spec must be a readable file" >&2; exit 5; }
-[ -n "$FILES" ] || { echo "--files is required: the lane's allowed paths" >&2; exit 5; }
+[ -n "$FILES" ] || { echo "--files is required: the lane's expected scope" >&2; exit 5; }
 
 # Effort values are the ones codex 0.157 lists for gpt-6-luna/gpt-6-sol. `ultra`
 # exists for Sol but means "automatic task delegation", which a lane must never
@@ -159,7 +179,7 @@ stale=$(git -C "$REPO" worktree list --porcelain 2>/dev/null | awk '/^worktree /
   [ -d "$old" ] || continue
   if [ -z "$(find "$old" -maxdepth 0 -mtime -1 2>/dev/null)" ]; then
     git -C "$REPO" worktree remove --force "$old" >/dev/null 2>&1 || true
-    rm -f "$old.codex-stderr.log"
+    rm -f "$old.codex-stderr.log" "$old.lane" "$old.prompt"
   fi
 done
 :
@@ -169,8 +189,9 @@ find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'codex-lane-*.codex-stderr.log' -mtime 
 
 WT="${TMPDIR:-/tmp}/codex-lane-$$-$(date +%s)"
 git -C "$REPO" worktree add --detach --quiet "$WT" "$BASE"
-cleanup() { git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true; }
+cleanup() { git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true; rm -f "$WT.lane" "$WT.prompt"; }
 ERRLOG="$WT.codex-stderr.log"   # beside the worktree, never inside it
+META="$WT.lane"                 # scope and verification, read by codex-lane-apply.sh
 # Deliberately NOT trapped on EXIT: the caller needs the worktree to read the
 # diff. cleanup() is called explicitly on the paths that should discard it.
 
@@ -187,6 +208,31 @@ done
 git -C "$WT" add -A >/dev/null 2>&1 || true
 git -C "$WT" -c user.email=lane@local -c user.name=lane \
     commit -q --allow-empty -m "codex-lane baseline" >/dev/null 2>&1 || true
+# Diff against this sha, not HEAD: a codex that commits in its worktree would
+# otherwise make its own work invisible and read as an empty diff.
+BASELINE=$(git -C "$WT" rev-parse HEAD)
+# What this lane wrote: tracked changes since the baseline plus new files, minus
+# the harness's own scratch files.
+lane_touched() {
+  ( cd "$WT" && { git diff --name-only "$BASELINE"; git ls-files --others --exclude-standard; } \
+    | grep -vxE '\.codex-final-message|\.codex-handoff\.md' | sed '/^$/d' | sort -u || true )
+}
+
+# The prompt codex reads: the harness preamble, the scope rule, then the spec.
+PROMPT="$WT.prompt"
+{ cat "$here/lane-preamble.md"
+  echo
+  if [ -n "$STRICT" ]; then
+    echo "- Strict scope: change only the files the spec lists. If the objective cannot"
+    echo "  be met without another file, stop and say which file and why."
+  else
+    echo "- The spec's files are the expected scope. You may change another file when"
+    echo "  the objective directly requires it; name each such file, and why, in your"
+    echo "  final message. An unnamed file outside the scope is not applied."
+  fi
+  echo; echo "--- task spec ---"; echo
+  cat "$SPEC"
+} > "$PROMPT"
 
 # --- run codex, scoped to the worktree ----------------------------------------
 FINAL="$WT/.codex-final-message"
@@ -216,9 +262,9 @@ CMD=(env -u OPENAI_API_KEY codex exec
 # only the tail is replayed.
 set +e
 if [ -n "$T" ]; then
-  "$T" -k 10 "$TMO" "${CMD[@]}" < "$SPEC" >"$ERRLOG" 2>&1
+  "$T" -k 10 "$TMO" "${CMD[@]}" < "$PROMPT" >"$ERRLOG" 2>&1
 else
-  "${CMD[@]}" < "$SPEC" >"$ERRLOG" 2>&1
+  "${CMD[@]}" < "$PROMPT" >"$ERRLOG" 2>&1
 fi
 rc=$?
 set -e
@@ -232,8 +278,8 @@ if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
   # nothing and ends in that state is codex being unreachable — the network,
   # not the task — so it is reported as unavailable (exit 3), not as a timeout
   # to resume (seen with real codex 0.157.1 behind a proxy that refused the API).
-  wrote=$( cd "$WT" && { git diff --name-only HEAD; git ls-files --others --exclude-standard; } \
-           | grep -v '^\.codex-final-message$' | sed '/^$/d' || true )
+  wrote=$(lane_touched)
+  [ -e "$WT/.codex-handoff.md" ] && wrote="${wrote}.codex-handoff.md"   # it ran: resumable, not unreachable
   recent=$(tail -n 200 "$ERRLOG" 2>/dev/null || true)
   if [ -z "$wrote" ] && grep -qiE 'waiting for network|reconnecting' <<<"$recent"; then
     cause=$(grep -m1 -iE 'proxy connection failed|could not resolve|dns error|connection refused|network is unreachable|failed to connect|timed out' <<<"$recent" \
@@ -251,17 +297,16 @@ if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
   echo "  model:    $MODEL"; echo "  effort:   $EFFORT"
   echo "  worktree: $WT   (kept — resume this lane against it)"
   echo "  log:      $ERRLOG"
+  echo "  handoff:"
+  if [ -s "$WT/.codex-handoff.md" ]; then sed 's/^/    /' "$WT/.codex-handoff.md"; else echo "    (no handoff file)"; fi
   [ -z "$BACKFILLED" ] || echo "  route id: $ROUTE_ID   (backfilled; pass --route-id $ROUTE_ID when resuming)"
   exit 4
 fi
 
 # --- what actually changed, and what broke scope ------------------------------
 # Diff against the baseline commit: exact lane output, new files included.
-# `|| true` again: grep -v exits 1 when it selects no lines, which is exactly the
-# empty-diff case — without it the script dies here and leaks the worktree
-# instead of reporting the failure.
-touched=$( cd "$WT" && { git diff --name-only HEAD; git ls-files --others --exclude-standard; } \
-           | grep -v '^\.codex-final-message$' | sed '/^$/d' | sort -u || true )
+# (lane_touched's `|| true` is load-bearing: grep -v exits 1 on an empty diff.)
+touched=$(lane_touched)
 
 # printf '%s\n', not '%s': without the trailing newline `read` drops the last
 # element, which silently empties $allowed and marks every path a violation.
@@ -296,6 +341,46 @@ if [ "$rc" -ne 0 ] && [ -z "$touched" ]; then
   fi
 fi
 
+# --- acceptance: the spec's verification, run once, by the harness ----------------
+# Budget: the supervising Bash call is capped at 600 s; leave ~10 s to report.
+# A result that cannot fit is "not_run" and the caller runs the command itself.
+if [ -n "$VERIFY" ] && [ -n "$touched" ]; then
+  left=$((590 - SECONDS)); v0=$SECONDS
+  if [ "$left" -lt 20 ]; then
+    VERIFY_RESULT=not_run
+  else
+    { echo; echo "=== acceptance: $VERIFY"; } >>"$ERRLOG"
+    set +e
+    if [ -n "$T" ]; then
+      ( cd "$WT" && "$T" -k 5 "$left" bash -c "$VERIFY" ) >>"$ERRLOG" 2>&1 </dev/null
+    else
+      ( cd "$WT" && bash -c "$VERIFY" ) >>"$ERRLOG" 2>&1 </dev/null
+    fi
+    vrc=$?
+    set -e
+    [ "$vrc" -eq 0 ] && VERIFY_RESULT=pass || VERIFY_RESULT=fail
+    VERIFY_S=$((SECONDS - v0))
+  fi
+fi
+
+# --- scope: expected by default, strict when asked --------------------------------
+# By default a path outside --files is applied only when codex's final message
+# names it — the reporting rule, checked mechanically. Under --strict-scope no
+# such path is ever applied.
+explained="" unexplained=""
+while IFS= read -r v; do
+  [ -n "$v" ] || continue
+  if [ -z "$STRICT" ] && [ -f "$FINAL" ] && grep -qF -- "$v" "$FINAL"; then
+    explained="$explained$v"$'\n'
+  else
+    unexplained="$unexplained$v"$'\n'
+  fi
+done <<<"$violations"
+applicable=$(printf '%s\n%s' "$(printf '%s\n' "$touched" | grep -Fx -f <(printf '%s\n' "$allowed") || true)" \
+             "$explained" | sed '/^$/d' | sort -u | tr '\n' ',' | sed 's/,$//' || true)
+{ echo "baseline=$BASELINE"; echo "strict_scope=${STRICT:-0}"; echo "verify=${VERIFY_RESULT:-none}"
+  echo "expected=$(printf '%s\n' "$allowed" | tr '\n' ',' | sed 's/,$//')"; echo "applicable=$applicable"; } > "$META"
+
 echo
 echo "LANE REPORT"
 echo "  repo:     $REPO"
@@ -305,23 +390,33 @@ echo "  worktree: $WT"
 echo "  rc:       $rc"
 echo "  log:      $ERRLOG"
 [ -z "$BACKFILLED" ] || echo "  route id: $ROUTE_ID   (backfilled; record the outcome against it)"
-echo "  touched:"; printf '%s\n' "$touched" | sed 's/^/    /'
+echo "  scope:    $([ -n "$STRICT" ] && echo strict || echo expected)"
+echo "  touched:"; printf '%s\n' "$touched" | sed '/^$/d; s/^/    /'
 N_TOUCHED=$(printf '%s\n' "$touched" | sed '/^$/d' | wc -l | tr -d ' ')
 N_VIOL=$(printf '%s\n' "$violations" | sed '/^$/d' | wc -l | tr -d ' ')
-if [ -n "$violations" ]; then
-  echo "  SCOPE VIOLATIONS (edited but not in the spec's Files):"
-  printf '%s\n' "$violations" | sed 's/^/    /'
-  echo "  -> these stay in the worktree. Do not apply them."
+if [ -n "$STRICT" ] && [ -n "$violations" ]; then
+  echo "  SCOPE VIOLATIONS (strict scope — refused, never applied):"
+  printf '%s\n' "$violations" | sed '/^$/d; s/^/    /'
+elif [ -n "$violations" ]; then
+  echo "  OUTSIDE EXPECTED SCOPE:"
+  printf '%s' "$explained" | sed '/^$/d; s/^/    /; s/$/   (named by codex: applied)/'
+  printf '%s' "$unexplained" | sed '/^$/d; s/^/    /; s/$/   (not named: not applied)/'
 fi
 if [ -z "$touched" ]; then
   echo "  status:   empty diff — the lane produced nothing. Treat as failure."
   cleanup; rm -f "$ERRLOG"
   exit 1
 fi
+case "${VERIFY_RESULT:-}" in
+  pass)    echo "  verify:   pass ($VERIFY)" ;;
+  fail)    echo "  verify:   FAIL ($VERIFY) — apply refuses this lane without --force"
+           sed -n '/^=== acceptance: /,$p' "$ERRLOG" | tail -n 15 | sed 's/^/    /' ;;
+  not_run) echo "  verify:   not run (wall clock spent) — run it yourself: $VERIFY" ;;
+  *)       echo "  verify:   none given" ;;
+esac
 echo
-echo "  Apply only the allowed paths back to the main tree with:"
-echo "    scripts/codex-lane-apply.sh --worktree '$WT' --repo '$REPO' --files '$FILES'"
-echo "  Discard the whole lane with:"
-echo "    git -C '$REPO' worktree remove --force '$WT'; rm -f '$ERRLOG'"
+echo "  Apply:    $here/codex-lane-apply.sh --worktree '$WT' --repo '$REPO' --remove"
+echo "  Discard:  git -C '$REPO' worktree remove --force '$WT'; rm -f '$ERRLOG' '$META' '$PROMPT'"
 [ "$rc" -eq 0 ] && LANE_STATUS=ok || LANE_STATUS=error   # wrote files, but codex failed
+[ "$rc" -eq 0 ] && [ "${VERIFY_RESULT:-}" = fail ] && exit 6
 exit "$rc"

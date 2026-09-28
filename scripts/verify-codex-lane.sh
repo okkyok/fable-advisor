@@ -51,13 +51,15 @@ Verification: python3 -c "import sys;sys.path.insert(0,'src');import calc;assert
 Constraints: touch nothing but src/calc.py.
 SPEC
 
-out=$("$here/codex-lane.sh" --spec "$T/../spec.txt" --files "src/calc.py" --repo "$T" --effort low --timeout 300 2>&1)
+out=$("$here/codex-lane.sh" --spec "$T/../spec.txt" --files "src/calc.py" --repo "$T" --effort low --timeout 300 \
+      --verify "python3 -c \"import sys;sys.path.insert(0,'src');import calc;assert calc.add(2,3)==5\"" 2>&1)
 echo "$out" | sed -n '/LANE REPORT/,$p' | sed 's/^/    /'
 wt=$(echo "$out" | awk '/worktree:/{print $2; exit}')
 
 if [ -n "$wt" ] && [ -d "$wt" ]; then
   ok "lane ran in its own worktree"
-  grep -q "SCOPE VIOLATIONS" <<<"$out" && ng "lane wrote outside its Files (reported, not applied)" || ok "lane stayed inside its Files"
+  grep -q "OUTSIDE EXPECTED SCOPE" <<<"$out" && ng "lane wrote outside its Files (reported; applied only if codex named it)" || ok "lane stayed inside its Files"
+  grep -q "verify:   pass" <<<"$out" && ok "the harness ran the acceptance command: pass" || ng "acceptance did not pass in the lane"
   "$here/codex-lane-apply.sh" --worktree "$wt" --repo "$T" --files "src/calc.py" --remove >/dev/null 2>&1
   ( cd "$T" && python3 -c "import sys;sys.path.insert(0,'src');import calc;assert calc.add(2,3)==5" 2>/dev/null ) \
     && ok "applied code is correct" || ng "applied code failed verification"

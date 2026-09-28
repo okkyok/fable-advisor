@@ -2,6 +2,8 @@
 # Stub `codex` for tests/run.sh. Records its argv, then behaves per STUB_CODEX:
 #   fix (default) · violation · nothing · quota · badmodel · sleep · crash (echoes the prompt, then fails)
 #   netdown (no API, hangs) · netdown_after_write (writes, then loses the network)
+#   extra (also writes src/helper.py and names it) · commit (commits its work in the worktree)
+# The prompt it read (preamble + spec) is saved beside argv as prompt.$$.
 # For fix/violation it writes every path on the spec's "Files:" line, relative
 # to --cd — exactly where the real CLI would write.
 set -u
@@ -16,11 +18,12 @@ for ((i = 0; i < ${#args[@]}; i++)); do
 done
 [ -n "${STUB_ARGV_DIR:-}" ] && printf '%s\n' "$@" > "$STUB_ARGV_DIR/argv.$$"
 spec=$(cat)
+[ -n "${STUB_ARGV_DIR:-}" ] && printf '%s\n' "$spec" > "$STUB_ARGV_DIR/prompt.$$"
 echo "stub codex transcript line (stderr)" >&2
 case "${STUB_CODEX:-fix}" in
   quota)    echo "ERROR: You've hit your usage limit. Try again at 3:05 PM." >&2; exit 1 ;;
   badmodel) echo "ERROR: The model 'gpt-9' does not exist or you do not have access to it." >&2; exit 1 ;;
-  sleep)    sleep 30; exit 0 ;;
+  sleep)    printf 'DONE: nothing\nNEXT: write src/calc.py\n' > "$cd_dir/.codex-handoff.md"; sleep 30; exit 0 ;;
   netdown)  # what real codex 0.157.1 printed when a proxy refused the API
             echo "2026-09-27T04:13:21.840613Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: URL error: Proxy connection failed: HTTP CONNECT failed with status 403" >&2
             echo "ERROR: Reconnecting... waiting for network" >&2; sleep 30; exit 0 ;;
@@ -38,4 +41,12 @@ if [ "${STUB_CODEX:-fix}" = netdown_after_write ]; then
 fi
 [ "${STUB_CODEX:-fix}" = violation ] && echo "stray" > "$cd_dir/docs/README.md"
 echo "stub codex: implemented ${files//$'\n'/ }" > "$out"
+if [ "${STUB_CODEX:-fix}" = extra ]; then
+  echo "def helper(): return 1" > "$cd_dir/src/helper.py"
+  echo "Also changed src/helper.py: the new code imports it." >> "$out"
+fi
+if [ "${STUB_CODEX:-fix}" = commit ]; then
+  git -C "$cd_dir" add -A >/dev/null 2>&1
+  git -C "$cd_dir" -c user.email=c@c -c user.name=c commit -qm "codex committed" >/dev/null 2>&1
+fi
 exit 0
