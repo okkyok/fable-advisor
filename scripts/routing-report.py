@@ -106,7 +106,17 @@ def lane_stats(tasks):
         "p90_lane_s": pct(seconds, 90),
         "timeout_rate": rate(sum(1 for r in tasks if any(a.get("lane_status") == "timeout" for a in r)), len(tasks)),
         "scope_violation_rate": rate(sum(1 for r in tasks if any((num(a.get("scope_violations")) or 0) > 0 for a in r)), len(tasks)),
+        # 5.5+: the harness's acceptance run. Of the tasks that got one, how
+        # many passed on the first run, and eventually.
+        "verify_first_pass": rate(sum(1 for r in tasks if verifies(r) and verifies(r)[0] == "pass"),
+                                  sum(1 for r in tasks if verifies(r))),
+        "verify_eventually_pass": rate(sum(1 for r in tasks if "pass" in verifies(r)),
+                                       sum(1 for r in tasks if verifies(r))),
         "status": tally(a.get("lane_status") for r in tasks for a in r)}
+
+
+def verifies(runs):
+    return [a["verify"] for a in runs if a.get("verify") in ("pass", "fail")]
 
 
 def model_effort(row):
@@ -163,7 +173,17 @@ def section(rows):
         "p50_s": pct([a.get("duration_s") for a in v], 50),
         "p90_s": pct([a.get("duration_s") for a in v], 90),
         "scope_violation_rate": rate(sum(1 for a in v if (num(a.get("scope_violations")) or 0) > 0), len(v)),
+        "verify_pass_rate": rate(sum(1 for a in v if a.get("verify") == "pass"),
+                                 sum(1 for a in v if a.get("verify") in ("pass", "fail"))),
         "status": tally(a.get("lane_status") for a in v)} for k, v in sorted(per_pair.items())}
+    # The same comparison for every route, Claude-side included, from accepted
+    # outcomes: this is where Opus at high vs medium (the agent's effort pin)
+    # shows up as success, retries and duration.
+    per_outcome_pair = defaultdict(list)
+    for o in outcomes.values():
+        if text(o.get("model")):
+            per_outcome_pair["%s %s" % (o.get("actual_route"), model_effort(o))].append(o)
+    out["outcomes_by_model_effort"] = {k: outcome_stats(v) for k, v in sorted(per_outcome_pair.items())}
 
     # Off-list answers are counted under fallback_reasons, not as disagreements.
     asked = [r for r in decisions if text(r.get("jev_route")) and r.get("jev_reason") != "unknown_choice"]
@@ -254,7 +274,22 @@ def section(rows):
                      "jev_recommendation_distribution": tally((r["jev_route"] for r in review_asked)),
                      "jev_disagreements": tally(("%s->%s" % (r.get("legacy_review"), r["jev_route"])
                                                  for r in review_asked if r["jev_route"] != r.get("legacy_review"))),
-                     "jev_fallback_reasons": tally((r.get("jev_reason") for r in reviews if r.get("jev_reason")))}
+                     "jev_fallback_reasons": tally((r.get("jev_reason") for r in reviews if r.get("jev_reason"))),
+                     "verification_source": tally((r.get("verification_source") for r in reviews
+                                                   if r.get("verification_source")))}
+    # Review results recorded with `outcome --verdict/--findings`, per reviewer
+    # model and effort: what a review at each effort level actually finds.
+    by_reviewer = defaultdict(list)
+    for o in outcomes.values():
+        if text(o.get("reviewer")) and o.get("reviewer") != "self" and (o.get("review_verdict") or
+                                                                         num(o.get("review_findings")) is not None):
+            by_reviewer["%s %s/%s" % (o["reviewer"], text(o.get("reviewer_model")) or "?",
+                                      text(o.get("reviewer_effort")) or "?")].append(o)
+    out["review"]["results_by_reviewer"] = {k: {
+        "n": len(v), "verdicts": tally(o.get("review_verdict") for o in v),
+        "avg_findings": mean([o.get("review_findings") for o in v]),
+        "task_success_rate": rate(sum(1 for o in v if o.get("outcome") == "success"), len(v))}
+        for k, v in sorted(by_reviewer.items())}
     return out
 
 
