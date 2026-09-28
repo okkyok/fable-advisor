@@ -8,6 +8,15 @@
     fable-route.py backfill --model M --effort E --file-count N ...   (codex-lane.sh, no --route-id)
     fable-route.py config
 
+Routing policy 5.4.0 (POLICY_VERSION, written on every new ledger row):
+
+    luna_low          codex gpt-6-luna  low    mechanical, one file, verified, no risk
+    luna_high         codex gpt-6-luna  high   ordinary implementation (the default)
+    luna_max          codex gpt-6-luna  max    narrow retry after one failure (eligibility-gated)
+    sol_high          codex gpt-6-sol   high   broad / integration-heavy work
+    claude_opus_high  implementer opus  high   two failures, or judgment a spec cannot carry
+    Fable             consult_first / fable_review only, never an implementation route
+
 Obvious cases are decided by rules in this file and never reach Jev. Only the
 ambiguous middle does, and only when FABLE_JEV_MODE is shadow or active. With
 FABLE_JEV_MODE=off the Jev adapter (jev_route.py) is never imported, no binary is
@@ -27,6 +36,7 @@ import re
 import sys
 import uuid
 
+POLICY_VERSION = "5.4.0"  # bump whenever routes, rules, floors or Jev options change
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.dont_write_bytecode = True  # importing jev_route must not litter the plugin directory
 MODES = ("off", "shadow", "active")
@@ -93,6 +103,9 @@ ROUTE_FIELDS = {
     # Claude-side reasons. Decided by rule, so they are never sent to Jev.
     "context_bound": bool, "below_spawn_floor": bool, "judgment_dominated": bool,
     "claude_only_tool": bool,
+    # Fable-consult signals. Also rule-only: they send the task to fable-advisor
+    # before any implementation, never to Jev.
+    "architectural_deadlock": bool, "opus_failed": bool,
 }
 REVIEW_FIELDS = {
     "objective": str, "file_count": int, "lines_changed": int, "mechanical": bool,
@@ -100,8 +113,13 @@ REVIEW_FIELDS = {
     "data_migration": bool, "security_sensitive": bool, "concurrency_sensitive": bool,
     "irreversible": bool, "wide_blast_radius": bool, "lane_disagreement": bool,
     "silence_gap": int, "attempts": int,
+    # Exceptional-review signals (fable_review). Rule-only, never sent to Jev.
+    "architectural_deadlock": bool, "opus_review_inconclusive": bool,
 }
 CLAUDE_SIDE = ("context_bound", "below_spawn_floor", "judgment_dominated", "claude_only_tool")
+# Keys decided by rule alone and never part of what Jev sees.
+ROUTE_RULE_ONLY = CLAUDE_SIDE + ("architectural_deadlock", "opus_failed")
+REVIEW_RULE_ONLY = ("architectural_deadlock", "opus_review_inconclusive")
 HIGH_RISK = ("security_sensitive", "data_migration", "schema_change", "api_change",
              "concurrency_sensitive", "irreversible")
 OBJECTIVE_MAX = 280
@@ -144,24 +162,40 @@ def high_risk(state):
 
 # --- routes -----------------------------------------------------------------------
 
-# Implementation routes in cost/capability order. `self` (the orchestrator does
-# it) is outside the order: it is chosen only by a Claude-side rule.
-RANKED = ("luna_low", "luna_high", "sol_high", "claude_fable")
+# Implementation routes. TIER orders them by cost for the risk floor only:
+# luna_max and sol_high share a tier because they are not a ladder — luna_max is
+# depth on a narrow retry, sol_high is breadth on integration-heavy work.
+# `self` (the orchestrator does it) is outside the order: only a Claude-side
+# rule chooses it. Fable is not here at all: it is consulted (consult_first) or
+# reviews (fable_review), and never implements, so neither Jev nor a caller can
+# route to it.
+ROUTES = ("luna_low", "luna_high", "luna_max", "sol_high", "claude_opus_high")
+TIER = {"luna_low": 0, "luna_high": 1, "luna_max": 2, "sol_high": 2, "claude_opus_high": 3}
 ROUTE_OPTIONS = {
     "luna_low": "Mechanical, localized, fully specified change with clear verification; little reasoning needed.",
     "luna_high": "Ordinary well-specified implementation; the default route.",
-    "sol_high": "Well-specified but reasoning-heavy: several components, complex integration, or hard debugging.",
-    "claude_fable": "The outcome turns on judgment a written spec cannot capture, not on how hard the code is.",
+    "luna_max": "Narrow, clearly specified task with runnable verification that already failed once; "
+                "needs deeper reasoning on the same small scope, not more breadth.",
+    "sol_high": "Broad or integration-heavy work: several interacting files or components, interface-heavy "
+                "implementation, or debugging with a wide search space.",
+    "claude_opus_high": "Already failed, and what remains is a local judgment or trade-off a written spec "
+                        "cannot pin down; the problem itself is understood.",
 }
 ROUTE_QUESTION = ("Which implementation route does this coding task need? "
                   "Judge only from the task characteristics given.")
-REVIEWS = ("none", "self_review", "fable_review")
+REVIEWS = ("none", "self_review", "opus_review", "fable_review")
 REVIEW_OPTIONS = {
     "none": "Trivial change fully proven by its passing verification command.",  # rule-only
     "self_review": "Ordinary change; the verification plus a re-read of the diff is enough.",
-    "fable_review": "Wide blast radius or hidden risk that warrants an independent senior review.",
+    "opus_review": "Wide blast radius or hidden risk that warrants an independent senior review.",
+    "fable_review": "The approach or framing itself is in doubt and a senior review did not settle it.",  # rule-only
 }
 REVIEW_QUESTION = "What review does this finished, verified change need before it is reported done?"
+
+# luna_max is a retry at the same small scope, so it stays inside a budget that a
+# max-effort run can finish under the lane's ~570 s wall clock: three files is
+# the largest "narrow" we are willing to assume before there is timeout data.
+LUNA_MAX_MAX_FILES = 3
 
 
 def lane_for(route):
@@ -171,10 +205,44 @@ def lane_for(route):
         "luna_low": {"lane": "codex-implementer", "model": model, "effort": "low"},
         "luna_high": {"lane": "codex-implementer", "model": model,
                       "effort": os.environ["FABLE_CODEX_DEFAULT_EFFORT"]},
+        "luna_max": {"lane": "codex-implementer", "model": model, "effort": "max"},
         "sol_high": {"lane": "codex-implementer", "model": os.environ["FABLE_CODEX_STRONG_MODEL"],
                      "effort": "high"},
-        "claude_fable": {"lane": "implementer", "model": "fable"},
+        # `opus` is the Claude Code alias for the latest Opus (Opus 5.5 in Claude
+        # Code 2.1.283's model catalog) and one of the values the Agent tool's
+        # per-spawn `model` accepts. Effort cannot be set on a spawn: it comes from
+        # agents/implementer.md's `effort: high` pin, recorded here so the ledger
+        # says what ran.
+        "claude_opus_high": {"lane": "implementer", "model": "opus", "effort": "high"},
     }[route]
+
+
+def review_lane_for(review):
+    return {
+        "none": {},
+        "self_review": {"reviewer": "self"},
+        "opus_review": {"reviewer": "opus-reviewer", "reviewer_model": "opus", "reviewer_effort": "high"},
+        "fable_review": {"reviewer": "fable-advisor", "reviewer_model": "fable"},
+    }[review]
+
+
+def failures(s):
+    return s.get("prior_failures", 0)
+
+
+def luna_max_eligible(s):
+    """luna_max is a narrow retry, never a first attempt or a hard-task default.
+
+    One failure (two already pin claude_opus_high), a runnable verification, a
+    known and small file count, no breadth (multi_component, interface_change —
+    that is sol_high's shape), no risk flag, and no sign the approach itself is
+    wrong (that goes to a Fable consult, not to more reasoning on the same spec).
+    """
+    return (failures(s) == 1 and flag(s, "verification_available")
+            and s.get("file_count") is not None and s["file_count"] <= LUNA_MAX_MAX_FILES
+            and not flag(s, "multi_component") and not flag(s, "interface_change")
+            and not high_risk(s)
+            and not flag(s, "architectural_deadlock") and not flag(s, "opus_failed"))
 
 
 def deterministic_route(s):
@@ -183,29 +251,54 @@ def deterministic_route(s):
         return "self", "context_bound", True
     if flag(s, "below_spawn_floor"):
         return "self", "below_spawn_floor", True
-    if s.get("prior_failures", 0) >= 2:
-        return "claude_fable", "failed_twice", True
+    if failures(s) >= 2:
+        return "claude_opus_high", "failed_twice", True
+    # The approach itself is in doubt: fable-advisor is consulted first (see
+    # consult_reason) and the implementation stays with Opus until the consult
+    # produces a new spec, which is then routed as a new decision.
+    if flag(s, "architectural_deadlock"):
+        return "claude_opus_high", "architectural_deadlock", True
+    if flag(s, "opus_failed"):
+        return "claude_opus_high", "opus_failed", True
     if flag(s, "judgment_dominated"):
-        return "claude_fable", "judgment_dominated", True
+        return "claude_opus_high", "judgment_dominated", True
     if (flag(s, "mechanical") and s.get("file_count") is not None and s["file_count"] <= 1
-            and flag(s, "verification_available") and s.get("prior_failures", 0) == 0
+            and flag(s, "verification_available") and failures(s) == 0
             and not high_risk(s) and not flag(s, "interface_change")
             and not flag(s, "multi_component")):
         return "luna_low", "mechanical_one_file", True
-    return "luna_high", "default", False
+    # A first retry stays at luna_high by rule; luna_max is an eligible option
+    # (Jev in active mode, or the caller) until the ledger shows it earns more.
+    return "luna_high", "retry" if failures(s) else "default", False
+
+
+def consult_reason(s):
+    """Why fable-advisor must be consulted before implementing, or None.
+
+    Fable reframes: it questions the approach and the problem statement, and its
+    answer becomes a new spec that a Luna/Sol/Opus lane implements.
+    """
+    if failures(s) >= 3:
+        return "failed_three_times"
+    for key in ("architectural_deadlock", "opus_failed"):
+        if flag(s, key):
+            return key
+    if any(flag(s, k) for k in ("api_change", "schema_change", "data_migration", "irreversible")):
+        return "expensive_to_reverse"
+    return None
 
 
 def route_floor(s):
     """The cheapest route nothing — Jev or caller — may go below.
 
-    Two failures pin claude_fable. Anything that keeps a task off the
+    Two failures pin claude_opus_high. Anything that keeps a task off the
     mechanical_one_file rule (a risk flag, a failure, no verification, an
     interface change, several components, an unknown size) also keeps Jev and
     the caller off luna_low.
     """
-    if s.get("prior_failures", 0) >= 2:
-        return "claude_fable"
-    if (high_risk(s) or s.get("prior_failures", 0) >= 1 or not flag(s, "verification_available")
+    if failures(s) >= 2:
+        return "claude_opus_high"
+    if (high_risk(s) or failures(s) >= 1 or not flag(s, "verification_available")
             or flag(s, "interface_change") or flag(s, "multi_component") or s.get("file_count") is None):
         return "luna_high"
     return "luna_low"
@@ -213,18 +306,47 @@ def route_floor(s):
 
 def below(route, floor):
     # `self` is outside the ranking: the orchestrator may take any task itself,
-    # except one that has already failed twice (that belongs to claude_fable).
+    # except one that has already failed twice (that belongs to claude_opus_high).
     if route == "self":
-        return floor == "claude_fable"
-    return route in RANKED and RANKED.index(route) < RANKED.index(floor)
+        return floor == "claude_opus_high"
+    return route in TIER and TIER[route] < TIER[floor]
+
+
+def route_refusal(route, s, floor):
+    """Why `route` may not run for state `s` (None if it may). Applies to Jev and
+    caller alike, so no confidence and no override gets past it."""
+    if below(route, floor):
+        return "below_risk_floor"
+    if route == "luna_max" and not luna_max_eligible(s):
+        return "luna_max_ineligible"
+    return None
+
+
+def jev_route_options(s, floor):
+    """The routes Jev may pick from in the ambiguous middle.
+
+    First attempts: luna_high / sol_high (and luna_low when the floor allows) —
+    Jev never sends a first attempt to Claude. After one failure: luna_high,
+    sol_high, claude_opus_high, and luna_max when eligible. Two failures never
+    reach Jev (hard rule), and Fable is never an option.
+    """
+    return {k: v for k, v in ROUTE_OPTIONS.items()
+            if route_refusal(k, s, floor) is None
+            and not (k == "claude_opus_high" and failures(s) < 1)}
 
 
 def deterministic_review(s):
-    risks = high_risk(s) + [k for k in ("wide_blast_radius", "lane_disagreement") if flag(s, k)]
+    """(review, rule, obvious). fable_review is exceptional: the approach itself
+    is contested. Ordinary high risk is a senior review by Opus."""
+    exceptional = [k for k in ("architectural_deadlock", "opus_review_inconclusive", "lane_disagreement")
+                   if flag(s, k)]
+    if exceptional:
+        return "fable_review", "exceptional:" + ",".join(exceptional), True
+    risks = high_risk(s) + (["wide_blast_radius"] if flag(s, "wide_blast_radius") else [])
     if risks:
-        return "fable_review", "high_risk:" + ",".join(risks), True
+        return "opus_review", "high_risk:" + ",".join(risks), True
     if s.get("attempts", 1) >= 2:
-        return "fable_review", "resisted_two_attempts", True
+        return "opus_review", "resisted_two_attempts", True
     if not flag(s, "verification_passed"):
         return "self_review", "verification_not_passed", True
     if (flag(s, "mechanical") and s.get("file_count") is not None and s["file_count"] <= 1
@@ -233,9 +355,10 @@ def deterministic_review(s):
     return "self_review", "ordinary", False
 
 
-# `none` is only ever a rule outcome. In the middle Jev may keep self_review or
-# escalate to fable_review — never skip review; that would be the fail-open.
-REVIEW_JEV_OPTIONS = {k: v for k, v in REVIEW_OPTIONS.items() if k != "none"}
+# `none` and `fable_review` are only ever rule outcomes. In the middle Jev may
+# keep self_review or escalate to opus_review — never skip review (the
+# fail-open), and never spend Fable on its own say-so.
+REVIEW_JEV_OPTIONS = {k: v for k, v in REVIEW_OPTIONS.items() if k in ("self_review", "opus_review")}
 
 
 # --- the Jev layer: reached only in shadow/active, only for the ambiguous middle ---
@@ -339,24 +462,30 @@ def cmd_route(args, text):
     legacy, rule, obvious = deterministic_route(state)
     floor = route_floor(state)
     record = {"event": "decision", "id": uuid.uuid4().hex[:12], "ts": now(),
+              "policy_version": POLICY_VERSION,
               "task": args.task or state.get("objective", "")[:80], "class": args.cls,
               "jev_mode": mode, "legacy_route": legacy, "rule": rule, "floor": floor}
+    if luna_max_eligible(state):
+        record["luna_max_eligible"] = True
     actual, decided_by = legacy, "rule" if obvious else "legacy"
 
     if args.route:
-        if below(args.route, floor):
-            record["override_rejected"] = "below_risk_floor"
+        refusal = route_refusal(args.route, state, floor)
+        if refusal:
+            record["override_rejected"] = refusal
         else:
             actual, decided_by = args.route, "caller"
     elif mode != "off":
         if obvious:
             record["jev_status"] = "skipped"
         else:
-            options = {k: v for k, v in ROUTE_OPTIONS.items() if not below(k, floor)}
-            jev_state = {k: v for k, v in state.items() if k not in CLAUDE_SIDE}
+            options = jev_route_options(state, floor)
+            jev_state = {k: v for k, v in state.items() if k not in ROUTE_RULE_ONLY}
             fields, choice = consult_jev(mode, ROUTE_QUESTION, jev_state, options)
             record.update(fields)
-            if choice is not None and not below(choice, floor):
+            # consult_jev only accepts a choice from `options`; the refusal check
+            # is repeated so no future option list can smuggle past the floor.
+            if choice is not None and route_refusal(choice, state, floor) is None:
                 actual, decided_by = choice, "jev"
 
     lane = lane_for(actual)
@@ -364,8 +493,11 @@ def cmd_route(args, text):
     record.update(actual_route=actual, decided_by=decided_by, **lane)
     if risks:
         record["risk"] = risks
-    if any(flag(state, k) for k in ("api_change", "schema_change", "data_migration", "irreversible")):
-        record["consult_first"] = "fable-advisor"  # an expensive-to-reverse decision
+    reason = consult_reason(state)
+    if reason:
+        # Fable reframes before anyone implements; the route above implements
+        # the spec that comes out of the consult.
+        record.update(consult_first="fable-advisor", consult_reason=reason)
     if flag(state, "claude_only_tool"):
         record["tool_bridge"] = True  # run the tool op Claude-side; the lane keeps the code
     append(record)
@@ -377,11 +509,23 @@ def cmd_route(args, text):
 
 
 def observed_route(model, effort):
-    """The route a lane's own model/effort amounts to, or "unmapped"."""
+    """The route a lane's own model/effort amounts to, or "unmapped".
+
+    Exact matches only. A model/effort pair no route runs (Luna at medium or
+    xhigh, Sol at anything but high, another model) is "unmapped" rather than
+    the nearest route: folding xhigh into luna_high would contaminate exactly
+    the high-vs-max comparison the ledger exists for. The record keeps the
+    real model and effort either way.
+    """
     if model == os.environ["FABLE_CODEX_STRONG_MODEL"]:
-        return "sol_high"
+        return "sol_high" if effort == "high" else "unmapped"
     if model == os.environ["FABLE_CODEX_DEFAULT_MODEL"]:
-        return "luna_low" if effort == "low" else "luna_high"
+        if effort == "low":
+            return "luna_low"
+        if effort == "max":
+            return "luna_max"
+        if effort == os.environ["FABLE_CODEX_DEFAULT_EFFORT"]:
+            return "luna_high"
     return "unmapped"
 
 
@@ -402,6 +546,7 @@ def cmd_backfill(args):
     legacy, rule, obvious = deterministic_route(state)
     actual = observed_route(args.model, args.effort)
     record = {"event": "decision", "id": uuid.uuid4().hex[:12], "ts": now(),
+              "policy_version": POLICY_VERSION,
               "task": args.task or state.get("objective", "")[:80], "class": "implement",
               "jev_mode": mode, "legacy_route": legacy, "rule": rule, "floor": route_floor(state),
               "backfilled": True}
@@ -409,8 +554,7 @@ def cmd_backfill(args):
         if obvious:
             record["jev_status"] = "skipped"
         else:
-            floor = record["floor"]
-            options = {k: v for k, v in ROUTE_OPTIONS.items() if not below(k, floor)}
+            options = jev_route_options(state, record["floor"])
             fields, _ = consult_jev("shadow", ROUTE_QUESTION, state, options)
             record.update(fields)
     record.update(actual_route=actual, decided_by="lane", lane="codex-implementer",
@@ -424,18 +568,25 @@ def cmd_review(args, text):
     mode = jev_mode()
     legacy, rule, obvious = deterministic_review(state)
     record = {"event": "review", "id": args.id or uuid.uuid4().hex[:12], "ts": now(),
+              "policy_version": POLICY_VERSION,
               "task": args.task, "jev_mode": mode, "legacy_review": legacy, "rule": rule}
     actual, decided_by = legacy, "rule" if obvious else "legacy"
     if mode != "off":
         if obvious:
             record["jev_status"] = "skipped"
         else:
-            fields, choice = consult_jev(mode, REVIEW_QUESTION, state, REVIEW_JEV_OPTIONS)
+            jev_state = {k: v for k, v in state.items() if k not in REVIEW_RULE_ONLY}
+            fields, choice = consult_jev(mode, REVIEW_QUESTION, jev_state, REVIEW_JEV_OPTIONS)
             record.update(fields)
-            if choice is not None:
+            if choice in REVIEW_JEV_OPTIONS:
                 actual, decided_by = choice, "jev"
-    record.update(review=actual, review_decided_by=decided_by)
+    reviewer = review_lane_for(actual)
+    record.update(review=actual, review_decided_by=decided_by, **reviewer)
     append(record)
+    record["declare"] = "review: %s (%s)%s" % (
+        actual, decided_by if decided_by != "rule" else rule,
+        " -> " + " ".join(str(reviewer[k]) for k in ("reviewer", "reviewer_model", "reviewer_effort")
+                          if k in reviewer) if reviewer else "")
     if ignored:
         record["ignored_keys"] = ignored
     emit(record)
@@ -450,7 +601,8 @@ LANE_STATUSES = ("ok", "empty_diff", "unavailable", "timeout", "blocked", "error
 def cmd_attempt(args):
     """One codex lane run, recorded by codex-lane.sh itself — no one has to remember."""
     previous = sum(1 for r in read_ledger() if r.get("id") == args.id and r.get("event") == "attempt")
-    record = {"event": "attempt", "id": args.id, "ts": now(), "attempt": previous + 1,
+    record = {"event": "attempt", "id": args.id, "ts": now(), "policy_version": POLICY_VERSION,
+              "attempt": previous + 1,
               "lane_status": args.lane_status, "rc": args.rc, "duration_s": args.duration,
               "model": args.model, "effort": args.effort, "touched": args.touched,
               "scope_violations": args.violations,
@@ -471,9 +623,13 @@ def cmd_outcome(args):
             attempts.append(rec)
     if not decision:
         warn("no decision with id %s in the ledger; writing the outcome alone" % args.id)
+    # An outcome belongs to the policy that made its decision: copied from the
+    # decision (absent on a pre-5.4 one), or the current policy when there is none.
     record = {k: v for k, v in decision.items() if k not in ("event", "ts", "declare")}
+    if not decision:
+        record["policy_version"] = POLICY_VERSION
     for key, value in review.items():
-        if key in ("legacy_review", "review", "review_decided_by"):
+        if key in ("legacy_review", "review", "review_decided_by", "reviewer", "reviewer_model"):
             record[key] = value
         elif key.startswith("jev_"):
             record["review_" + key] = value
@@ -490,6 +646,7 @@ def cmd_outcome(args):
 
 def cmd_config(_args):
     info = {k: os.environ[k] for k in sorted(os.environ) if k.startswith("FABLE_")}
+    info["policy_version"] = POLICY_VERSION
     info["jev_mode_effective"] = jev_mode()
     info["ledger_effective"] = ledger_path()
     if info["jev_mode_effective"] != "off":  # never probe when off
@@ -509,7 +666,8 @@ def main(argv=None):
     r = sub.add_parser("route", help="decide an implementation route from a decision state on stdin")
     r.add_argument("--task", default="")
     r.add_argument("--class", dest="cls", default="implement")
-    r.add_argument("--route", choices=("self",) + RANKED, help="the architect's explicit choice")
+    r.add_argument("--route", choices=("self",) + ROUTES,
+                   help="the architect's explicit choice (still subject to the floor and luna_max eligibility)")
     r.add_argument("--state", default="-", help="state file, or - for stdin")
     v = sub.add_parser("review", help="decide a review from a review state on stdin")
     v.add_argument("--id", help="the route decision's id, to join them in the ledger")
@@ -540,6 +698,13 @@ def main(argv=None):
     b.add_argument("--verification", action="store_true", help="the spec names a verification command")
     b.add_argument("--task", default=None)
     sub.add_parser("config", help="print the effective configuration")
+    argv = sys.argv[1:] if argv is None else argv
+    if "--route=claude_fable" in argv or any(
+            x == "--route" and y == "claude_fable" for x, y in zip(argv, argv[1:])):
+        # Retired in 5.4.0. Say where the work went instead of argparse's bare list.
+        warn("route claude_fable was retired in 5.4.0: implementation that needs Claude is "
+             "claude_opus_high; Fable is consulted (consult_first: fable-advisor), not routed to")
+        return 2
     args = parser.parse_args(argv)
     try:
         if args.command in ("route", "review"):

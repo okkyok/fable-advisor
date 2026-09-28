@@ -18,7 +18,8 @@
 #
 # --model / --effort default to FABLE_CODEX_DEFAULT_MODEL / FABLE_CODEX_DEFAULT_EFFORT
 # (scripts/fable-config.sh). Changing the default model is a config change, never
-# an edit here.
+# an edit here. Pass what fable-route.py returned: luna_max is `--effort max`,
+# which spends far more of the same --timeout than high does.
 #
 # stdout: codex's last message, then a LANE REPORT block.
 # exit:   0 ok · 1 empty diff · 3 codex unavailable (missing, auth, quota, model

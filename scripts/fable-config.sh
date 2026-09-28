@@ -12,9 +12,14 @@
 # backend or key each such call is logged as a fallback and routing is unchanged.)
 
 # --- Codex lane (permanent; independent of Jev) --------------------------------
-: "${FABLE_CODEX_DEFAULT_MODEL:=gpt-6-luna}"   # default implementation model
-: "${FABLE_CODEX_DEFAULT_EFFORT:=high}"        # low | medium | high | xhigh | max
-: "${FABLE_CODEX_STRONG_MODEL:=gpt-6-sol}"     # the sol_high route: hard but well-specified work
+# Routes (policy 5.4.0, scripts/fable-route.py): luna_low = default model at low,
+# luna_high = default model at FABLE_CODEX_DEFAULT_EFFORT, luna_max = default
+# model at max (a narrow retry after one failure, never a default), sol_high =
+# strong model at high. claude_opus_high is Claude-side (implementer, model:
+# opus, effort pinned high in agents/implementer.md) and is not configured here.
+: "${FABLE_CODEX_DEFAULT_MODEL:=gpt-6-luna}"   # default implementation model (luna_* routes)
+: "${FABLE_CODEX_DEFAULT_EFFORT:=high}"        # the luna_high effort; keep high — max is luna_max, not a default
+: "${FABLE_CODEX_STRONG_MODEL:=gpt-6-sol}"     # the sol_high route: broad, integration-heavy work
 
 # --- Routing ledger (permanent) ------------------------------------------------
 : "${FABLE_LEDGER:=$HOME/.claude/fable-advisor/routing.jsonl}"   # "off" disables writing

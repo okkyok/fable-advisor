@@ -5,7 +5,9 @@ A small control plane for delegation in Claude Code.
 Implementation goes to the Codex lane by default, because the two subscriptions
 are not interchangeable: Claude quota is the scarce resource that your reasoning,
 review and integration consume, while the ChatGPT side runs GPT-6 Luna and Sol
-with far more headroom. Work stays Claude-side only for one of five named reasons.
+with far more headroom. Work stays Claude-side only for one of five named reasons;
+when it does, it runs on Claude Opus 5.5. Fable is kept for what only it is for:
+questioning the approach when everything else has stalled.
 
 Every Codex lane runs in its own disposable git worktree, so a lane cannot reach
 the main tree or another lane's tree, scope violations are reported instead of
@@ -32,46 +34,74 @@ export FABLE_JEV_MODE=active
 |---|---|
 | `off` | Legacy deterministic routing only. Jev code is never imported; no Jev binary, key, MCP or network is needed. |
 | `shadow` | Log only. Jev classifies the ambiguous cases; its answer goes to the ledger next to the route that actually ran. |
-| `active` | Jev + confidence gate + deterministic fallback. Jev's route is used only at confidence ≥ `FABLE_JEV_MIN_CONFIDENCE` and never below the risk floor; any failure falls back and is logged. |
+| `active` | Jev + confidence gate + deterministic fallback. Jev's route is used only at confidence ≥ `FABLE_JEV_MIN_CONFIDENCE`, never below the risk floor and only when the route is eligible for the task; any failure falls back and is logged. |
 
 **To stop using Jev: `export FABLE_JEV_MODE=off`.** Nothing else.
 
 ```
 decision state ──► hard rules ──obvious──────────────────────────┐
-                      │                                           │
+                      │   (≥3 failures, deadlock, opus_failed,    │
+                      │    schema/API/migration/irreversible      │
+                      │    ──► also consult_first: fable-advisor) │
                       └─ambiguous──► Jev (shadow/active only)     │
+                                      │ eligible options only     │
                                       │ confidence ≥ 0.80?        │
                                       │ above the risk floor?     │
                                       ├─no / error / timeout ─► deterministic route
                                       └─yes (active) ─────────────┤
                                                                   ▼
-                              luna_low · luna_high · sol_high · claude_fable · self
+             luna_low · luna_high · luna_max · sol_high · claude_opus_high · self
                                                                   │
                                               verification ◄──────┘
                                                   │
-                        review hard rules ──obvious──► none / self_review / fable_review
+         review hard rules ──obvious──► none / self_review / opus_review / fable_review
                                                   │
-                                      ambiguous ──► Jev (same gate) ──► self_review / fable_review
+                                      ambiguous ──► Jev (same gate) ──► self_review / opus_review
+```
+
+The implementation routes form a ladder with one fork, not a line:
+
+```
+luna_low ──► luna_high ──┬──► luna_max  (narrow, failed once, verifiable) ──┐
+                         └──► sol_high  (broad, integration-heavy)       ──┴──► claude_opus_high
+                                                                                      │
+                                                          Fable: consult / exceptional review only
 ```
 
 | Route | Runs as | For |
 |---|---|---|
 | `luna_low` | codex, `gpt-6-luna`, effort `low` | Mechanical, one file, runnable verification, no risk flag. |
-| `luna_high` | codex, `gpt-6-luna`, effort `high` | Ordinary implementation — the default. |
-| `sol_high` | codex, `gpt-6-sol`, effort `high` | Hard but well-specified: several components, integration, debugging. |
-| `claude_fable` | `implementer`, `model: fable` | Judgment a spec cannot carry, or two failed attempts. Not "hard code". |
+| `luna_high` | codex, `gpt-6-luna`, effort `high` | Ordinary implementation — the default, first attempt and first retry. |
+| `luna_max` | codex, `gpt-6-luna`, effort `max` | A narrow retry: failed once, runnable verification, ≤ 3 files, not multi-component, no interface change, no risk flag. Never a first attempt. |
+| `sol_high` | codex, `gpt-6-sol`, effort `high` | Breadth: several interacting components, integration, interface-heavy work, wide-search debugging. |
+| `claude_opus_high` | `implementer`, `model: opus` (Opus 5.5), effort `high` | Two failed attempts, or judgment a spec cannot carry. Not "hard code". |
 | `self` | the orchestrator | Context-bound, or below the spawn floor. |
 
-Jev is a cheap control-plane classifier that exists to avoid *unnecessary* Fable
-and Sol calls — not a cheap substitute for Fable. It picks one key from a fixed
-list and returns a confidence; it never writes code, reviews code, or sees any:
-the router sends it a whitelisted decision state (objective ≤ 280 chars, file
-count, risk flags, prior failures, verification availability) and drops every
-other key. Rules still own the obvious cases — Jev is not called for them — and
-the high-risk rules (security, data migration, schema, public API, concurrency,
-irreversible, two failures) cannot be overridden by any Jev answer. In review
-gating Jev can only escalate (`self_review` → `fable_review`); `none` is a rule
-outcome for verified one-file mechanical changes, never a Jev answer.
+| Fable | Runs as | For |
+|---|---|---|
+| `consult_first: fable-advisor` | `fable-advisor` (read-only) | Three failures, an architectural deadlock, an Opus attempt that failed, or a schema/API/migration/irreversible decision. Fable reframes; a Luna/Sol/Opus lane implements the result. |
+| `fable_review` | `fable-advisor` (read-only) | Exceptional review: an Opus review could not settle it, a lane/model disagreement, or the framing itself in doubt. |
+
+| Review | Runs as | For |
+|---|---|---|
+| `none` | — | One file, mechanical, verification passed, no silence gap. Rule only. |
+| `self_review` | the orchestrator | Ordinary change. |
+| `opus_review` | `opus-reviewer` (Opus 5.5, `high`) | Security, schema, API, migration, concurrency, irreversible, wide blast radius, or resisted two attempts. |
+| `fable_review` | `fable-advisor` (Fable 5) | Exceptional only (above). Rule only. |
+
+Jev is a cheap control-plane classifier that exists to avoid *unnecessary* Sol,
+Max and Opus calls — not a cheap substitute for any of them. It picks one key
+from a fixed list and returns a confidence; it never writes code, reviews code,
+or sees any: the router sends it a whitelisted decision state (objective ≤ 280
+chars, file count, risk flags, prior failures, verification availability) and
+drops every other key. Rules still own the obvious cases — Jev is not called for
+them — and the high-risk rules (security, data migration, schema, public API,
+concurrency, irreversible, two failures) cannot be overridden by any Jev answer.
+Jev only ever sees the routes the task is eligible for: a first attempt is
+offered `luna_low`/`luna_high`/`sol_high`, a first retry adds `luna_max` (when
+eligible) and `claude_opus_high`, and Fable is never an option. In review
+gating Jev can only escalate (`self_review` → `opus_review`); `none` and
+`fable_review` are rule outcomes, never Jev answers.
 
 Settings live in one file, [`scripts/fable-config.sh`](scripts/fable-config.sh),
 all as environment variables:
@@ -83,7 +113,7 @@ all as environment variables:
 | `FABLE_JEV_TIMEOUT` | `8` | seconds before a Jev call counts as a fallback |
 | `FABLE_JEV_BACKEND` | `auto` | `semdecide` \| `jev-cli`; `auto` prefers semdecide |
 | `FABLE_CODEX_DEFAULT_MODEL` | `gpt-6-luna` | the codex default; change models here, not in scripts |
-| `FABLE_CODEX_DEFAULT_EFFORT` | `high` | `low` \| `medium` \| `high` \| `xhigh` \| `max` |
+| `FABLE_CODEX_DEFAULT_EFFORT` | `high` | the `luna_high` effort; keep it `high` (`luna_low` and `luna_max` fix their own) |
 | `FABLE_CODEX_STRONG_MODEL` | `gpt-6-sol` | the `sol_high` model |
 | `FABLE_LEDGER` | `~/.claude/fable-advisor/routing.jsonl` | `off` disables the ledger |
 
@@ -104,11 +134,28 @@ run without `--route-id` is still logged, as `unrouted`, and gets a *backfilled*
 decision: the lane reads the objective, file count and whether a verification
 command is named off the spec, records the model/effort it runs as the actual
 route, and logs Jev's answer beside it (always log-only — a running lane's model
-and effort never change). The `LANE REPORT` prints that `route id:`. The one manual step is
+and effort never change). The observed route is an exact match — Luna at
+`low`/`high`/`max` is `luna_low`/`luna_high`/`luna_max`, Sol at `high` is
+`sol_high` — and anything else (Luna at `xhigh`, say) is `unmapped` rather than
+folded into the nearest route; the real model and effort stay on the row. The
+`LANE REPORT` prints that `route id:`. The one manual step is
 `fable-route.py outcome --id <id> --outcome success|...`, which records whether
 the result was accepted.
 
-The report's `compliance` block says whether the data can be trusted before you
+**Every new row carries `policy_version`** (`5.4.0`). The report never averages
+policies together: `current_policy` is the headline, `by_policy_version` holds
+one full section per policy (rows written before 5.4 have no version and form
+`pre-5.4`), and `historical_all` is the labelled mix. A row belongs to the policy
+of the decision it joins. Each section has `lane_attempts.by_route` (first-try
+and eventual success, retry rate, average/p50/p90 lane seconds, timeout rate,
+scope violations), `by_model_effort` (the same per attempt, keyed by what
+actually ran, e.g. `gpt-6-luna/max`), outcome stats by route (Opus included),
+Jev's `jev_recommendation_distribution`, agreement, disagreements, confidence
+buckets, and the shadow counterfactuals — `jev=luna_max ran=luna_high` with how
+the route that actually ran did, and how many of those `active` would have
+adopted. Nothing in an existing ledger is rewritten.
+
+Each section's `compliance` block says whether the data can be trusted before you
 draw conclusions from it: the share of lane runs that carried a route id,
 unrouted runs, backfilled decisions, codex decisions with no lane run, outcome rates (codex and
 Claude-side routes separately), reviews linked to a decision, and the most
@@ -131,32 +178,89 @@ caller reroutes; it never silently substitutes a different model.
 | | |
 |---|---|
 | `skills/orchestration` | The routing policy. Loads when you are deciding whether and how to delegate. |
-| `agents/codex-implementer` | Runs `codex exec` (GPT-6 Luna by default, Sol when routed). The cross-vendor implementation lane. |
-| `agents/implementer` | Claude-side implementation. Depth chosen on the spawn: `model: haiku` / `sonnet` / `fable`. |
-| `scripts/fable-route.py` | The routing policy as code: hard rules, risk floor, review gate, ledger. Optional Jev layer behind `FABLE_JEV_MODE`. |
+| `agents/codex-implementer` | Runs `codex exec` (GPT-6 Luna at `low`/`high`/`max`, or Sol, as routed). The cross-vendor implementation lane. |
+| `agents/implementer` | Claude-side implementation. Depth chosen on the spawn: `model: haiku` / `sonnet` / `opus` (`claude_opus_high`), effort pinned `high`. |
+| `scripts/fable-route.py` | The routing policy as code (`POLICY_VERSION`): hard rules, risk floor, `luna_max` eligibility, Fable consult triggers, review gate, ledger. Optional Jev layer behind `FABLE_JEV_MODE`. |
 | `scripts/fable-config.sh` | Every setting, as an environment variable with a safe default. |
 | `scripts/jev_route.py` | The only Jev-specific file: a typed-choice adapter over semdecide / jev-cli. Never imported when Jev is off. |
-| `scripts/routing-report.py` | Ledger summary: Jev/legacy agreement, route distribution, success/retry/duration by route, confidence buckets. |
+| `scripts/routing-report.py` | Ledger summary per policy version: route and model/effort success, retries, p50/p90 duration and timeouts; Jev recommendations, agreement, confidence buckets and shadow counterfactuals. |
 | `scripts/codex-lane.sh` | Runs a Codex lane inside an isolated worktree with `--model`/`--effort` from the caller, and reports what it touched, including paths outside its spec. With `--route-id` it records every run in the ledger itself. |
 | `scripts/codex-lane-apply.sh` | Copies only the spec'd paths back into the main tree. Purely additive — never checkout/reset/clean/stash. |
 | `scripts/verify-codex-lane.sh` | End-to-end check: runs a real lane against a scratch repo and asserts a co-resident lane's uncommitted work survives. |
-| `tests/run.sh` | Offline suite (stub codex and Jev): routing in all three modes, every fallback, hard rules, review gate, ledger, lane model/effort, isolation, concurrent lanes. |
-| `agents/fable-advisor` | Read-only reviewer and second opinion (Fable 5). Holds no write tools, so "advises only" is mechanical rather than aspirational. |
+| `tests/run.sh` | Offline suite (stub codex and Jev): routing in all three modes, every fallback, hard rules, `luna_max` eligibility, Opus escalation, Fable consult triggers, review gate, ledger, policy-versioned report, backfill, lane model/effort, isolation, concurrent lanes. |
+| `agents/opus-reviewer` | `opus_review`: read-only senior reviewer (Opus 5.5, effort `high`), two-pass review with the silence gap. |
+| `agents/fable-advisor` | Read-only frontier consult and exceptional reviewer (Fable 5): reframes stuck problems, never implements. Holds no write tools, so "advises only" is mechanical rather than aspirational. |
 
 ## The routing policy in one paragraph
 
 Implementation goes to codex unless one of five reasons keeps it Claude-side:
-context-bound, below the spawn floor, judgment-dominated, review, or Claude-only
-tooling (which licenses the tool operation, not the implementation). Write a
+context-bound, below the spawn floor, judgment-dominated (Opus 5.5, as are two
+codex failures), review, or Claude-only tooling (which licenses the tool
+operation, not the implementation). Fable does not implement: when attempts
+keep failing or the design is deadlocked it is consulted to reframe the problem,
+and a lane implements what comes back. Write a
 five-part spec — objective, files, interfaces, constraints, verification — and
 run the lane through `codex-lane.sh`; anything you leave out, the lane invents,
 and anything it writes outside **Files** stays in the worktree. Codex *quota*
 exhaustion stops and reports rather than failing over to Claude, because failing
 over spends the scarce subscription exactly when the abundant one is unavailable.
 A codex *timeout* does not move lanes — it resumes against the same worktree.
-Review in proportion to blast radius, and before reviewing compute the *silence
+Review in proportion to blast radius — Opus for risk, Fable only when the
+review itself is contested — and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
+
+## 5.4.0
+
+**Routing re-tiered for GPT-6 Luna Max and Claude Opus 5.5 (policy 5.4.0).**
+This changes routing semantics, so the ledger now says which policy decided
+each row.
+
+- **`luna_max`** (GPT-6 Luna, effort `max`) is new, and it is a *narrow retry*,
+  not a harder default: eligible only after exactly one failure, with a runnable
+  verification, a known file count ≤ 3, no multi-component or interface change,
+  and no risk flag (`luna_max_eligible()`). The deterministic first retry stays
+  `luna_high`; `luna_max` is chosen by the caller (`--route luna_max`, refused
+  when ineligible) or by Jev in `active`. `luna_high` is still the default and
+  `FABLE_CODEX_DEFAULT_EFFORT` is still `high`.
+- **`sol_high`** is now described by breadth — several interacting components,
+  integration, interface-heavy work — as the peer of `luna_max`, not a rung above it.
+- **`claude_opus_high`** (`implementer`, `model: opus`, effort pinned `high`)
+  replaces `claude_fable`: two failures and judgment-dominated work go to Opus
+  5.5. `opus` is Claude Code's alias for the latest Opus (`claude-opus-5-5` in
+  Claude Code 2.1.283's model catalog) and a value the Agent tool's per-spawn
+  `model` accepts. `--route claude_fable` is refused with a pointer here.
+- **Fable is consult and exceptional review only.** Three failures,
+  `architectural_deadlock`, `opus_failed` (new flags), or the existing
+  schema/API/migration/irreversible triggers return `consult_first:
+  fable-advisor` with a `consult_reason`; Fable reframes and a lane implements.
+  Fable is never an implementation route and never a Jev option.
+- **Reviews:** `none` · `self_review` · `opus_review` (new `opus-reviewer` agent:
+  high risk, wide blast radius, two attempts) · `fable_review` (lane/model
+  disagreement, `opus_review_inconclusive`, `architectural_deadlock`). Jev may
+  choose only `self_review` or `opus_review`.
+- **Jev's options follow eligibility:** first attempts `luna_low`/`luna_high`/
+  `sol_high`; one failure adds `luna_max` (if eligible) and `claude_opus_high`;
+  two failures are a hard rule and skip Jev. Shadow still never changes a route;
+  active still needs confidence, floor and now eligibility. `off` is unchanged.
+
+**Measurement.** Decision, review, attempt and outcome rows carry
+`policy_version: "5.4.0"` (`POLICY_VERSION`). `routing-report.py` reports
+`current_policy`, `by_policy_version` and a labelled `historical_all`, with
+`policy_version_distribution`, so v5.3 and v5.4 numbers are never averaged into
+one headline; old rows (no version, `claude_fable`, high-risk `fable_review`)
+stay readable as `pre-5.4`. New per-section fields: `p50_lane_s`, `p90_lane_s`,
+`timeout_rate` and `retry_rate` per route, `by_model_effort` per attempt (the
+real model/effort), duration percentiles in outcome stats,
+`jev_recommendation_distribution`, `would_accept_in_active` on shadow
+counterfactuals, and review-side Jev recommendations. **Backfill fix:** Luna at
+`max` was recorded as `luna_high`; it is now `luna_max`, and a pair no route runs
+(Luna `xhigh`, Sol `xhigh`) is `unmapped` instead of being folded into High.
+Existing ledgers are read as they are — nothing to migrate.
+
+**Breaking for report consumers:** the report's per-policy numbers moved under
+`current_policy` / `by_policy_version`; the old top-level keys (`jev`,
+`lane_attempts`, `compliance`, …) are now inside each section.
 
 ## 5.3.0
 
@@ -251,7 +355,16 @@ unavailable.
 
 ## Future work
 
-Kept out of 5.1 on purpose, because a context-management mistake has a larger
+Routing (decide from 5.4.0 data, not before):
+
+- Whether `luna_max` should become the *deterministic* first retry for eligible
+  tasks — read `jev=luna_max ran=luna_high` against `luna_high` retries, and
+  `luna_max`'s `p90_lane_s` / `timeout_rate` against the 570 s wall clock.
+- Whether Opus earns more of the first-retry share than it gets, from
+  `jev=claude_opus_high ran=…` counterfactuals.
+- Whether Jev is worth `active`, judged on `current_policy` only.
+
+Context management, kept out of 5.1 on purpose, because a context-management mistake has a larger
 blast radius than a routing mistake — a discarded tool result silently lowers
 quality instead of failing loudly:
 
