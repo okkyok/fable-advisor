@@ -1,6 +1,6 @@
 {
   "name": "fable-advisor",
-  "version": "5.2.0",
+  "version": "5.3.0",
   "description": "A small control plane for delegation: implementation goes to the Codex lane (GPT-6 Luna by default, GPT-6 Sol for hard but well-specified work, model and effort passed by the caller) because Claude quota is the scarce resource your reasoning, review and integration consume, and work stays Claude-side only for one of five named reasons. A deterministic router decides the obvious cases and a risk floor no one can route under; optional Jev adaptive routing (FABLE_JEV_MODE=off|shadow|active, shadow (log-only) by default) classifies only the ambiguous middle behind a confidence gate that falls back to the deterministic route, and every decision lands in a routing ledger with a report. Every lane runs in a disposable git worktree, so a lane cannot reach the main tree or another lane's uncommitted work. Also ships a model-parameterized Claude-side implementer (haiku/sonnet/fable) and a read-only Fable 5 reviewer gated by blast radius, with the silence-gap check and a two-pass review.",
   "author": {
     "name": "Dan McAteer",

@@ -28,7 +28,9 @@
 # ledger (status, rc, duration, model, effort, touched, scope violations), so
 # outcome data accumulates without anyone remembering. With --route-id the row
 # joins its routing decision; without one it is recorded as "unrouted", which is
-# how routing-report.py measures how often the router was skipped.
+# how routing-report.py measures how often the router was skipped, and a
+# decision is backfilled for it (`fable-route.py backfill`) so Jev's shadow
+# answer is logged even when the router was skipped.
 set -euo pipefail
 SECONDS=0
 
@@ -87,6 +89,36 @@ esac
 case "$MODEL" in
   ""|*[!A-Za-z0-9._-]*) echo "--model must be a plain model slug (got '$MODEL')" >&2; exit 5 ;;
 esac
+
+# --- backfill: a run that skipped the router still gets a routing decision ------
+# Jev is only ever asked inside `fable-route.py`, so a lane called without
+# --route-id used to leave shadow mode with nothing to measure. The decision
+# written here takes what can be read off the spec (objective, file count,
+# whether a verification command is named), records this run's model/effort as
+# the actual route, and logs Jev beside it; it can never change the model or
+# effort. The attempt row keeps `unrouted`, so compliance still counts the
+# skipped router. Any failure here only costs the decision row.
+BACKFILLED=""
+ledger_off=$(printf '%s' "$FABLE_LEDGER" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+if [ -n "$UNROUTED" ] && [ "$ledger_off" != off ]; then
+  objective=$(awk '
+    found && NF { sub(/^[#* \t]+/, ""); print; exit }
+    !found && (tolower($0) ~ /^[#* \t]*objective[* \t]*:/ || tolower($0) ~ /^#+[ \t]*objective[ \t]*$/) {
+      line = $0; sub(/^[#* \t]*[A-Za-z]+[* \t]*:?[* \t]*/, "", line)
+      if (line != "") { print line; exit }
+      found = 1
+    }' "$SPEC" 2>/dev/null || true)
+  [ -n "$objective" ] || objective=$(awk 'NF { sub(/^[#* \t]+/, ""); print; exit }' "$SPEC" 2>/dev/null || true)
+  verify=""
+  if grep -qiE '^[#*[:blank:]]*verification[a-z ]*[*[:blank:]]*:[*[:blank:]]*[^[:space:]]|^#+[[:blank:]]*verification' "$SPEC" 2>/dev/null; then
+    verify=1
+  fi
+  nfiles=$(printf '%s\n' "$FILES" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; /^$/d' | sort -u | wc -l | tr -d ' ')
+  bf=$(python3 "$here/fable-route.py" backfill --model "$MODEL" --effort "$EFFORT" --file-count "$nfiles" \
+         ${objective:+--objective "$objective"} ${verify:+--verification} 2>/dev/null || true)
+  bid=$(printf '%s\n' "$bf" | sed -n 's/^{"event":"decision","id":"\([A-Za-z0-9_-]*\)".*/\1/p' | head -n 1)
+  if [ -n "$bid" ]; then ROUTE_ID=$bid BACKFILLED=1; fi
+fi
 
 # Unavailable is a routing fact for the caller, reported before any worktree exists.
 command -v codex >/dev/null 2>&1 || {
@@ -218,6 +250,7 @@ if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
   echo "  model:    $MODEL"; echo "  effort:   $EFFORT"
   echo "  worktree: $WT   (kept — resume this lane against it)"
   echo "  log:      $ERRLOG"
+  [ -z "$BACKFILLED" ] || echo "  route id: $ROUTE_ID   (backfilled; pass --route-id $ROUTE_ID when resuming)"
   exit 4
 fi
 
@@ -270,6 +303,7 @@ echo "  effort:   $EFFORT"
 echo "  worktree: $WT"
 echo "  rc:       $rc"
 echo "  log:      $ERRLOG"
+[ -z "$BACKFILLED" ] || echo "  route id: $ROUTE_ID   (backfilled; record the outcome against it)"
 echo "  touched:"; printf '%s\n' "$touched" | sed 's/^/    /'
 N_TOUCHED=$(printf '%s\n' "$touched" | sed '/^$/d' | wc -l | tr -d ' ')
 N_VIOL=$(printf '%s\n' "$violations" | sed '/^$/d' | wc -l | tr -d ' ')

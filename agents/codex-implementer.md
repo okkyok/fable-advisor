@@ -119,7 +119,9 @@ reports what the lane touched:
 `ROUTE_ID` comes from the caller's `ROUTE_ID:` line (the router's decision id).
 Pass it whenever it is given, including on a `RESUME` run: the script then
 writes one attempt row per run to the routing ledger, which is how the routing
-policy gets measured. Without it the run is simply not recorded.
+policy gets measured. Without it the run is recorded as `unrouted` with a
+backfilled decision; the `LANE REPORT` then prints a `route id:` — use it as
+`--route-id` on a resume and report it back so the caller can record the outcome.
 
 Only codex's final message and the `LANE REPORT` come back; the session
 transcript goes to the `log:` path it names. Read that log when the run failed —

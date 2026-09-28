@@ -292,7 +292,9 @@ check "ledger off: the lane still runs and writes no row" '[ $rc -eq 0 ] && [ "$
 discard "$out"
 out=$(PATH="$BASE" "$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" 2>/dev/null); rc=$?
 u=$(tail -n 1 "$FABLE_LEDGER")
-check "without --route-id the run is still recorded, as unrouted" '[ $rc -eq 3 ] && [ "$(field "$u" unrouted)" = True ] && [ "$(field "$u" event)" = attempt ] && grep -q "^unrouted-" <<<"$(field "$u" id)"' "$u"
+check "without --route-id the run is still recorded, as unrouted" '[ $rc -eq 3 ] && [ "$(field "$u" unrouted)" = True ] && [ "$(field "$u" event)" = attempt ]' "$u"
+d=$(grep "\"id\":\"$(field "$u" id)\"" "$FABLE_LEDGER" | grep '"event":"decision"' | tail -n 1)
+check "an unrouted run gets a backfilled decision under the same id" '[ "$(field "$d" backfilled)" = True ] && [ "$(field "$d" jev_reason)" = executable_missing ]' "$d"
 o=$(python3 "$S/fable-route.py" outcome --id "$rid" --outcome success)
 check "outcome fills attempts and duration from lane rows" '[ "$(field "$o" attempts)" = 4 ] && [ -n "$(field "$o" duration_s)" ]' "$o"
 rep=$(python3 "$S/routing-report.py" --json)
@@ -307,6 +309,57 @@ assert c[\"unrouted_lane_runs\"]>=1 and 0<c[\"routed_lane_run_rate\"]<1, c
 assert c[\"outcome_rate\"] is not None and c[\"outcome_rate_codex_routes\"] is not None, c
 assert c[\"codex_decisions_without_lane_run\"]>=1 and c[\"open_decisions_recent\"], c
 " "$rep"' "$rep"
+
+echo "Unrouted lanes are backfilled"
+PATH="$JEVBIN:$CODEXBIN:$BASE"; reset_jev; rm -f "$STUB_ARGV_DIR"/*
+printf '## Objective\nAdd rounding to the price formatter\n\nFiles: src/mul.py\n\n## Verification\npytest -q\n' > "$T/spec-bf"
+dec() { grep '"event":"decision"' "$FABLE_LEDGER" | grep "\"id\":\"$1\"" | tail -n 1; }
+last_attempt() { grep '"event":"attempt"' "$FABLE_LEDGER" | tail -n 1; }
+out=$(STUB_CHOICE=sol_high STUB_CONF=0.95 "$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" 2>/dev/null); rc=$?
+a=$(last_attempt); bid=$(field "$a" id); d=$(dec "$bid")
+check "lane without --route-id still succeeds" '[ $rc -eq 0 ]' "$out"
+check "attempt joins a backfilled decision and stays unrouted" '[ "$(field "$a" unrouted)" = True ] && [ "$(field "$d" backfilled)" = True ] && ! grep -q "^unrouted-" <<<"$bid"' "$a / $d"
+check "shadow Jev answer is logged beside the route that ran" '[ "$(field "$d" jev_status)|$(field "$d" jev_route)|$(field "$d" actual_route)|$(field "$d" decided_by)|$(field "$d" model)" = "shadow|sol_high|luna_high|lane|gpt-6-luna" ]' "$d"
+check "objective and verification are read off the spec" '[ "$(field "$d" task)" = "Add rounding to the price formatter" ] && [ "$(field "$d" floor)" = luna_low ]' "$d"
+check "Jev sees the objective and file count, not the spec body" 'grep -q "Add rounding" "$STUB_JEV_LOG" && ! grep -q "pytest" "$STUB_JEV_LOG"' "$(cat "$STUB_JEV_LOG" 2>/dev/null)"
+check "LANE REPORT names the backfilled route id" 'grep -q "route id: $bid" <<<"$out"' "$out"
+discard "$out"
+rm -f "$STUB_ARGV_DIR"/*
+out=$(STUB_CHOICE=sol_high STUB_CONF=0.99 FABLE_JEV_MODE=active "$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" 2>/dev/null)
+d=$(dec "$(field "$(last_attempt)" id)")
+check "active mode: a confident Jev still cannot change a running lane" 'argv_has gpt-6-luna && ! argv_has gpt-6-sol && [ "$(field "$d" jev_status)/$(field "$d" actual_route)" = shadow/luna_high ]' "$d"
+discard "$out"
+out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --model gpt-6-sol --effort xhigh 2>/dev/null)
+d=$(dec "$(field "$(last_attempt)" id)")
+check "strong model is recorded as sol_high" '[ "$(field "$d" actual_route)/$(field "$d" effort)" = sol_high/xhigh ]' "$d"
+discard "$out"
+out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --effort low 2>/dev/null)
+d=$(dec "$(field "$(last_attempt)" id)")
+check "default model at low effort is recorded as luna_low" '[ "$(field "$d" actual_route)" = luna_low ]' "$d"
+discard "$out"
+reset_jev
+out=$(FABLE_JEV_MODE=off "$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" 2>/dev/null)
+d=$(dec "$(field "$(last_attempt)" id)")
+check "Jev off: decision backfilled, Jev never called" '[ "$(field "$d" backfilled)/$(field "$d" jev_mode)" = True/off ] && [ ! -e "$STUB_JEV_MARK" ]' "$d"
+discard "$out"
+n=$(wc -l < "$FABLE_LEDGER")
+out=$(FABLE_LEDGER=off "$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" 2>/dev/null); rc=$?
+check "ledger off: no backfill, no Jev call, lane still runs" '[ $rc -eq 0 ] && [ ! -e "$STUB_JEV_MARK" ] && [ "$(wc -l < "$FABLE_LEDGER")" -eq "$n" ]' "$out"
+discard "$out"
+printf 'Objective: tidy the helpers.\nFiles: src/calc.py, src/mul.py\n' > "$T/spec-bf2"
+out=$(STUB_JEV=sleep FABLE_JEV_TIMEOUT=1 "$S/codex-lane.sh" --spec "$T/spec-bf2" --files "src/calc.py, src/mul.py" --repo "$REPO" 2>/dev/null); rc=$?
+d=$(dec "$(field "$(last_attempt)" id)")
+check "a failing Jev only costs its answer: fallback logged, lane runs" '[ $rc -eq 0 ] && [ "$(field "$d" jev_status)" = fallback ] && [ "$(field "$d" task)" = "tidy the helpers." ]' "$d"
+check "no verification line: floor stays luna_high" '[ "$(field "$d" floor)" = luna_high ]' "$d"
+discard "$out"
+rep=$(python3 "$S/routing-report.py" --json)
+check "report: backfills counted, unrouted runs not counted as routed, shadow evidence joins" 'python3 -c "
+import json,sys; d=json.loads(sys.argv[1]); c=d[\"compliance\"]
+assert c[\"backfilled_decisions\"]>=5 and c[\"routed_lane_run_rate\"]<0.5, c
+assert d[\"jev\"][\"consulted_on_backfill\"]>=1, d[\"jev\"]
+assert \"jev=sol_high ran=luna_high\" in d[\"shadow_disagreement_lanes\"], d[\"shadow_disagreement_lanes\"]
+" "$rep"' "$rep"
+PATH="$CODEXBIN:$BASE"; reset_jev
 
 echo "Isolation"
 REPO="$T/repo2"; mkrepo "$REPO"

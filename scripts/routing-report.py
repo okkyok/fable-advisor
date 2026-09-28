@@ -118,6 +118,8 @@ def report(rows):
     agree = sum(1 for r in asked if r["jev_route"] == r.get("legacy_route"))
     out["jev"] = {
         "consulted": sum(1 for r in decisions if r.get("jev_status") not in (None, "skipped")),
+        "consulted_on_backfill": sum(1 for r in decisions if r.get("backfilled") is True
+                                     and r.get("jev_status") not in (None, "skipped")),
         "skipped_obvious": sum(1 for r in decisions if r.get("jev_status") == "skipped"),
         "status": tally((r.get("jev_status") for r in decisions if r.get("jev_status"))),
         "fallback_reasons": tally((r.get("jev_reason") for r in decisions if r.get("jev_reason"))),
@@ -162,7 +164,9 @@ def report(rows):
     # mechanically; these rates show how often the manual steps were skipped.
     decision_ids = {d["id"] for d in decisions if text(d.get("id"))}
     runs = [r for r in rows if r.get("event") == "attempt" and text(r.get("id"))]
-    routed_runs = [r for r in runs if r["id"] in decision_ids]
+    # A backfilled decision joins its run for the report, but the router was
+    # still skipped: the attempt keeps `unrouted`, so it does not count as routed.
+    routed_runs = [r for r in runs if r["id"] in decision_ids and r.get("unrouted") is not True]
     codex = [d for d in decisions if d.get("lane") == "codex-implementer" and text(d.get("id"))]
     claude = [d for d in decisions if d.get("lane") in ("implementer", "self") and text(d.get("id"))]
     open_decisions = [d for d in decisions if text(d.get("id")) and d["id"] not in outcomes]
@@ -170,6 +174,7 @@ def report(rows):
         "lane_runs": len(runs),
         "routed_lane_run_rate": rate(len(routed_runs), len(runs)),
         "unrouted_lane_runs": sum(1 for r in runs if r.get("unrouted") is True),
+        "backfilled_decisions": sum(1 for d in decisions if d.get("backfilled") is True),
         "codex_decisions_without_lane_run": sum(1 for d in codex if d["id"] not in attempts),
         "outcome_rate": rate(len(decisions) - len(open_decisions), len(decisions)),
         "outcome_rate_codex_routes": rate(sum(1 for d in codex if d["id"] in outcomes), len(codex)),

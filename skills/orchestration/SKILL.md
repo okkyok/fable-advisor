@@ -238,7 +238,9 @@ word alone.
 `codex-lane.sh` appends one `attempt` row per lane run — that part needs no one
 to remember it. A run without `--route-id` is still logged, as `unrouted`, and
 the report's `compliance` block counts those: a skipped router shows up as a
-number, not as silently missing data. What only you know is whether the result was
+number, not as silently missing data. Such a run also backfills a decision from
+the spec (Jev logged beside it, never followed) and prints its `route id:` in the
+`LANE REPORT` — record the outcome against that id. What only you know is whether the result was
 accepted, so close each routed task with its outcome; attempts and duration are
 filled in from the lane rows:
 
