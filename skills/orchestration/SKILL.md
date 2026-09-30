@@ -10,6 +10,11 @@ quota is the scarce resource your reasoning, review and integration consume,
 while the codex side has far more headroom. So the question is never "is this
 worth delegating" but "is there a reason this cannot go to codex".
 
+Write replies to the user in Japanese. Everything else stays in English: specs,
+router state (including `objective`), prompts to subagents, code, comments and
+commit messages. Route ids, flags, commands and paths stay as written, and print
+the router's `declare` line verbatim.
+
 ## Work stays Claude-side for one of five reasons
 
 1. **Context-bound** — writing the spec would cost more than doing it.

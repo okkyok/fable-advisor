@@ -227,6 +227,16 @@ review itself is contested — and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
 
+## 5.6.1
+
+**Replies to the user in Japanese.** The orchestration skill now tells the
+orchestrator to answer the user in Japanese and to keep everything else in
+English: specs (the lane's backfill reads their `Objective`/`Verification`
+headings), router state (`objective` goes to Jev, so the ledger stays
+comparable), subagent prompts, code, comments and commit messages. Route ids,
+flags, commands, paths and the router's `declare` line are never translated.
+Routing is unchanged, so rows stay on `policy_version` 5.6.0.
+
 ## 5.6.0
 
 **`luna_low` is rule-only (policy 5.6.0).** Jev is no longer offered
