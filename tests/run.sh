@@ -50,7 +50,7 @@ PATH="$BASE"
 r=$(route off "$MIDDLE")
 check "routes with no Jev binary and no credentials" '[ "$(field "$r" actual_route)" = luna_high ]' "$r"
 check "default model is gpt-6-luna at high" '[ "$(field "$r" model)/$(field "$r" effort)" = gpt-6-luna/high ]' "$r"
-check "ledger row carries no jev_* fields" '! last_line | grep -qE "\"jev_(status|route|confidence|reason|backend|latency_ms|would_accept)\""' "$(last_line)"
+check "ledger row carries no jev_* fields" '! last_line | grep -qE "\"jev_(status|route|confidence|reason|backend|latency_ms|would_accept|input)\""' "$(last_line)"
 PATH="$JEVBIN:$BASE"; reset_jev
 r=$(route off "$MIDDLE")
 printf '%s' '{"file_count":3,"verification_passed":true}' | FABLE_JEV_MODE=off python3 "$S/fable-route.py" review >/dev/null
@@ -66,6 +66,7 @@ PATH="$BASE"
 r=$(printf '%s' "$MIDDLE" | python3 "$S/fable-route.py" route 2>/dev/null)
 check "unset FABLE_JEV_MODE defaults to shadow" '[ "$(field "$r" jev_mode)" = shadow ]' "$r"
 check "default shadow without a Jev backend falls back and keeps the route" '[ "$(field "$r" jev_status)" = fallback ] && [ "$(field "$r" jev_reason)" = executable_missing ] && [ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" decided_by)" = legacy ]' "$r"
+check "no backend: Jev read nothing, so no jev_input is logged" '! last_line | grep -q "\"jev_input\""' "$(last_line)"
 PATH="$JEVBIN:$BASE"
 
 echo "Jev shadow"
@@ -153,6 +154,28 @@ sent=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stdin"])
 check "unknown keys (a pasted diff) never reach Jev" '! grep -q SECRET_DIFF <<<"$sent"' "$sent"
 check "Claude-side flags are not sent" '! grep -q context_bound <<<"$sent"' "$sent"
 check "objective truncated, state well under 2 KB" '[ ${#sent} -lt 600 ]' "${#sent} bytes"
+same_input() {  # the row's jev_input is exactly the state the stub read on stdin — no key more, none less
+  python3 -c 'import json,sys; row=json.loads(sys.argv[1]); sent=json.loads(json.load(open(sys.argv[2]))["stdin"])
+sys.exit(0 if isinstance(row.get("jev_input"), dict) and row["jev_input"] == sent else 1)' "$1" "$STUB_JEV_LOG"
+}
+check "active: the decision row logs the state Jev received as jev_input" 'same_input "$(last_line)"' "$(last_line)"
+check "the pasted diff and rule-only flags are not logged either" '! last_line | grep -qE "SECRET_DIFF|\"diff\"|context_bound"' "$(last_line)"
+reset_jev; export STUB_CHOICE=sol_high STUB_CONF=0.9
+r=$(route shadow '{"objective":"Split the parser","file_count":5,"multi_component":true,"verification_available":true,"below_spawn_floor":false,"notes":"PASTED"}')
+check "shadow: jev_input matches what Jev received, and the route is unchanged" 'same_input "$(last_line)" && [ "$(field "$r" actual_route)|$(field "$r" jev_status)" = "luna_high|shadow" ]' "$(last_line)"
+check "shadow: unknown and rule-only keys never reach jev_input" '! last_line | grep -qE "PASTED|\"notes\"|below_spawn_floor"' "$(last_line)"
+reset_jev
+route shadow '{"file_count":1,"mechanical":true,"verification_available":true}' >/dev/null
+check "a rule-decided row (Jev skipped) has no jev_input" '[ "$(field "$(last_line)" jev_status)" = skipped ] && ! last_line | grep -q "\"jev_input\"" && [ ! -e "$STUB_JEV_MARK" ]' "$(last_line)"
+route off '{"objective":"Split the parser","file_count":5,"multi_component":true,"verification_available":true}' >/dev/null
+check "off mode: the same ambiguous task logs no jev_input" '! last_line | grep -q "\"jev_input\"" && [ ! -e "$STUB_JEV_MARK" ]' "$(last_line)"
+rep=$(python3 "$S/routing-report.py" --json)
+check "report breaks Jev's recommendations down by the input it saw" 'python3 -c "
+import json,sys; b=json.loads(sys.argv[1])[\"current_policy\"][\"jev\"][\"recommendation_by_input\"]
+assert b[\"multi_component\"][\"true\"].get(\"sol_high\",0)>=1, b
+assert b[\"file_count\"][\"4+\"] and \"absent\" in b[\"prior_failures\"], b
+assert set(b)=={\"prior_failures\",\"file_count\",\"multi_component\",\"interface_change\"}, b
+" "$rep"' "$rep"
 
 echo "5.4 routing policy: Luna Max, Opus, Fable"
 NARROW='{"objective":"Fix rounding in the price formatter","file_count":2,"verification_available":true,"prior_failures":1}'
@@ -160,7 +183,7 @@ offered() { python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["argv"];
 reset_jev
 r=$(route off "$NARROW")
 check "first failure + narrow + verification: luna_max eligible, deterministic stays luna_high" '[ "$(field "$r" luna_max_eligible)|$(field "$r" legacy_route)|$(field "$r" actual_route)|$(field "$r" rule)" = "True|luna_high|luna_high|retry" ]' "$r"
-check "off mode on a luna_max-eligible task: Jev never called, no jev fields" '[ ! -e "$STUB_JEV_MARK" ] && ! last_line | grep -qE "\"jev_(status|route|confidence|reason|backend|latency_ms|would_accept)\""' "$(last_line)"
+check "off mode on a luna_max-eligible task: Jev never called, no jev fields" '[ ! -e "$STUB_JEV_MARK" ] && ! last_line | grep -qE "\"jev_(status|route|confidence|reason|backend|latency_ms|would_accept|input)\""' "$(last_line)"
 reset_jev; export STUB_CHOICE=luna_max STUB_CONF=0.9
 r=$(route shadow "$NARROW")
 check "shadow: Jev's luna_max is logged, the route does not change" '[ "$(field "$r" jev_route)|$(field "$r" jev_status)|$(field "$r" jev_would_accept)|$(field "$r" actual_route)|$(field "$r" effort)" = "luna_max|shadow|True|luna_high|high" ]' "$r"
@@ -496,6 +519,7 @@ check "attempt joins a backfilled decision and stays unrouted" '[ "$(field "$a" 
 check "shadow Jev answer is logged beside the route that ran" '[ "$(field "$d" jev_status)|$(field "$d" jev_route)|$(field "$d" actual_route)|$(field "$d" decided_by)|$(field "$d" model)" = "shadow|sol_high|luna_high|lane|gpt-6-luna" ]' "$d"
 check "objective and verification are read off the spec" '[ "$(field "$d" task)" = "Add rounding to the price formatter" ] && [ "$(field "$d" floor)" = luna_low ]' "$d"
 check "Jev sees the objective and file count, not the spec body" 'grep -q "Add rounding" "$STUB_JEV_LOG" && ! grep -q "pytest" "$STUB_JEV_LOG"' "$(cat "$STUB_JEV_LOG" 2>/dev/null)"
+check "the backfilled decision logs that same state as jev_input" 'same_input "$d" && ! grep -q pytest <<<"$d"' "$d"
 check "LANE REPORT names the backfilled route id" 'grep -q "route id: $bid" <<<"$out"' "$out"
 discard "$out"
 rm -f "$STUB_ARGV_DIR"/*
@@ -531,7 +555,7 @@ discard "$out"
 reset_jev
 out=$(FABLE_JEV_MODE=off "$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")
-check "Jev off: decision backfilled, Jev never called" '[ "$(field "$d" backfilled)/$(field "$d" jev_mode)" = True/off ] && [ ! -e "$STUB_JEV_MARK" ]' "$d"
+check "Jev off: decision backfilled, Jev never called" '[ "$(field "$d" backfilled)/$(field "$d" jev_mode)" = True/off ] && [ ! -e "$STUB_JEV_MARK" ] && ! grep -q "\"jev_input\"" <<<"$d"' "$d"
 discard "$out"
 n=$(wc -l < "$FABLE_LEDGER")
 out=$(FABLE_LEDGER=off "$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" 2>/dev/null); rc=$?

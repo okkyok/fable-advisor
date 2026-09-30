@@ -119,6 +119,25 @@ def verifies(runs):
     return [a["verify"] for a in runs if a.get("verify") in ("pass", "fail")]
 
 
+INPUT_BREAKDOWN = ("prior_failures", "file_count", "multi_component", "interface_change")
+
+
+def input_value(row, key):
+    """One field of the state Jev was sent, as a report bucket; None if the row has no jev_input.
+
+    "absent" means the caller never stated it — Jev saw no value, not false.
+    """
+    state = row.get("jev_input")
+    if not isinstance(state, dict):
+        return None
+    value = state.get(key)
+    if value is None:
+        return "absent"
+    if key == "file_count" and num(value) is not None:
+        return "<=1" if value <= 1 else "2-3" if value <= 3 else "4+"
+    return json.dumps(value)
+
+
 def model_effort(row):
     return "%s/%s" % (text(row.get("model")) or "?", text(row.get("effort")) or "?")
 
@@ -203,6 +222,13 @@ def section(rows):
         "would_accept_in_active": rate(sum(1 for r in asked if r.get("jev_would_accept") is True),
                                        sum(1 for r in asked if r.get("jev_status") == "shadow")),
         "avg_latency_ms": mean([r.get("jev_latency_ms") for r in decisions]),
+        # 5.5.1+: what Jev recommends against what it was shown, so a lean
+        # towards one route can be checked against the task's shape.
+        "recommendation_by_input": {key: {value: tally(r["jev_route"] for r in asked
+                                                       if input_value(r, key) == value)
+                                          for value in sorted({input_value(r, key) for r in asked
+                                                               if isinstance(r.get("jev_input"), dict)})}
+                                    for key in INPUT_BREAKDOWN},
     }
 
     buckets = []

@@ -452,6 +452,16 @@ def consult_jev(mode, question, state, options):
     return fields, choice
 
 
+# Fallbacks raised before the state left this process: Jev read nothing.
+JEV_NOT_SENT = ("adapter_missing", "adapter_error", "invalid_backend", "executable_missing",
+                "state_too_large")
+
+
+def jev_input(fields, state):
+    """The state as Jev read it, for the decision row — or None when it never got there."""
+    return None if fields.get("jev_reason") in JEV_NOT_SENT else state
+
+
 # --- ledger -------------------------------------------------------------------------
 
 def ledger_path():
@@ -529,7 +539,7 @@ def cmd_route(args, text):
             options = jev_route_options(state, floor)
             jev_state = {k: v for k, v in state.items() if k not in ROUTE_RULE_ONLY}
             fields, choice = consult_jev(mode, ROUTE_QUESTION, jev_state, options)
-            record.update(fields)
+            record.update(fields, jev_input=jev_input(fields, jev_state))
             # consult_jev only accepts a choice from `options`; the refusal check
             # is repeated so no future option list can smuggle past the floor.
             if choice is not None and route_refusal(choice, state, floor) is None:
@@ -607,7 +617,7 @@ def cmd_backfill(args):
         else:
             options = jev_route_options(state, record["floor"])
             fields, _ = consult_jev("shadow", ROUTE_QUESTION, state, options)
-            record.update(fields)
+            record.update(fields, jev_input=jev_input(fields, state))
     record.update(actual_route=actual, decided_by="lane", lane="codex-implementer",
                   model=args.model, effort=args.effort)
     append(record)
