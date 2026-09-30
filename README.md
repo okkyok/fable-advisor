@@ -99,8 +99,10 @@ drops every other key. Rules still own the obvious cases — Jev is not called f
 them — and the high-risk rules (security, data migration, schema, public API,
 concurrency, irreversible, two failures) cannot be overridden by any Jev answer.
 Jev only ever sees the routes the task is eligible for: a first attempt is
-offered `luna_low`/`luna_high`/`sol_high`, a first retry adds `luna_max` (when
-eligible) and `claude_opus_high`, and Fable is never an option. In review
+offered `luna_high`/`sol_high`, a first retry adds `luna_max` (when eligible)
+and `claude_opus_high`, and Fable is never an option. `luna_low` is never a Jev
+option: only the `mechanical_one_file` rule (or a caller's explicit `--route`)
+picks it. In review
 gating Jev can only escalate (`self_review` → `opus_review`); `none` and
 `fable_review` are rule outcomes, never Jev answers.
 
@@ -154,7 +156,7 @@ folded into the nearest route; the real model and effort stay on the row. The
 `fable-route.py outcome --id <id> --outcome success|...`, which records whether
 the result was accepted.
 
-**Every new row carries `policy_version`** (`5.4.0`). The report never averages
+**Every new row carries `policy_version`** (currently `5.6.0`). The report never averages
 policies together: `current_policy` is the headline, `by_policy_version` holds
 one full section per policy (rows written before 5.4 have no version and form
 `pre-5.4`), and `historical_all` is the labelled mix. A row belongs to the policy
@@ -224,6 +226,33 @@ Review in proportion to blast radius — Opus for risk, Fable only when the
 review itself is contested — and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
+
+## 5.6.0
+
+**`luna_low` is rule-only (policy 5.6.0).** Jev is no longer offered
+`luna_low`; a first attempt in the ambiguous middle chooses between
+`luna_high` and `sol_high`. `luna_low` is still chosen by the
+`mechanical_one_file` rule, the risk floor is unchanged (a caller may still pass
+`--route luna_low` above it), and backfilled decisions log Jev against the same
+narrower list. An off-list `luna_low` answer is logged as `jev_status:
+fallback`, `jev_reason: unknown_choice`, so it stays visible in the report.
+
+Why: in the ledger, Jev recommended `luna_low` three times. The two that failed
+were multi-file work (one with 13 scope violations) at confidence 0.35 and
+0.47, which active mode's 0.80 gate would have refused anyway; the one that
+succeeded was a confidence-1.0 comment rewrite that the rule covers. Removing
+the option gives up only the few minutes low effort saves on light work in the
+middle, which by definition is not the one-file mechanical case.
+
+What this does not change: Jev's lean towards `sol_high` on first attempts
+remains, now as a two-way split. Whether that lean is justified cannot be
+judged until the state sent to Jev is kept in the ledger. `luna_max` is
+unchanged — it is offered only on an eligible first retry, and the ledger has no
+retry decisions from Jev yet.
+
+**Compatibility.** Jev's option list changed, so 5.6.0 is its own
+`policy_version`; judge `active` on 5.6.0 rows only. Route ids, CLI, ledger
+format and `FABLE_*` variables are unchanged.
 
 ## 5.5.0
 

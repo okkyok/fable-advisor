@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034,SC2209  # variables are read inside check's eval strings
-# Offline test suite: routing policy 5.5.0 (luna_max eligibility, claude_opus_high
+# Offline test suite: routing policy 5.6.0 (luna_max eligibility, claude_opus_high
 # escalation, Fable consult triggers, strict scope), Jev modes and fallbacks,
 # review gate (self/opus/fable), ledger and the policy-versioned report,
 # backfill, the codex lane's model/effort, expected/strict scope, harness
@@ -69,19 +69,19 @@ check "default shadow without a Jev backend falls back and keeps the route" '[ "
 PATH="$JEVBIN:$BASE"
 
 echo "Jev shadow"
-reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.91
+reset_jev; export STUB_CHOICE=sol_high STUB_CONF=0.91
 r=$(route shadow "$MIDDLE")
 check "Jev's choice does not change the actual route" '[ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" decided_by)" = legacy ]' "$r"
 row=$(last_line)
-check "ledger keeps legacy, jev route, confidence and actual" '[ "$(field "$row" legacy_route)|$(field "$row" jev_route)|$(field "$row" jev_confidence)|$(field "$row" actual_route)|$(field "$row" jev_status)" = "luna_high|luna_low|0.91|luna_high|shadow" ]' "$row"
+check "ledger keeps legacy, jev route, confidence and actual" '[ "$(field "$row" legacy_route)|$(field "$row" jev_route)|$(field "$row" jev_confidence)|$(field "$row" actual_route)|$(field "$row" jev_status)" = "luna_high|sol_high|0.91|luna_high|shadow" ]' "$row"
 check "shadow records whether active would have accepted it" '[ "$(field "$row" jev_would_accept)" = True ]' "$row"
 r=$(STUB_CONF=0.4 route shadow "$MIDDLE")
 check "shadow low confidence: would_accept false, reason low_confidence" '[ "$(field "$r" jev_would_accept)" = False ] && [ "$(field "$r" jev_reason)" = low_confidence ]' "$r"
 
 echo "Jev active"
-reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.91
+reset_jev; export STUB_CHOICE=sol_high STUB_CONF=0.91
 r=$(route active "$MIDDLE")
-check "confident Jev route is adopted" '[ "$(field "$r" actual_route)" = luna_low ] && [ "$(field "$r" decided_by)" = jev ] && [ "$(field "$r" effort)" = low ]' "$r"
+check "confident Jev route is adopted" '[ "$(field "$r" actual_route)" = sol_high ] && [ "$(field "$r" decided_by)" = jev ] && [ "$(field "$r" model)/$(field "$r" effort)" = gpt-6-sol/high ]' "$r"
 r=$(STUB_CONF=0.79 route active "$MIDDLE")
 check "low confidence -> deterministic route" '[ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" jev_status)/$(field "$r" jev_reason)" = fallback/low_confidence ]' "$r"
 r=$(STUB_CONF=0.99 FABLE_JEV_MIN_CONFIDENCE=abc route active "$MIDDLE")
@@ -103,7 +103,7 @@ check "jev-cli auth failure -> fallback auth" '[ "$(field "$r" jev_reason)" = au
 r=$(STUB_JEV=exit:4 FABLE_JEV_BACKEND=jev-cli route active "$MIDDLE")
 check "jev-cli network failure -> fallback network" '[ "$(field "$r" jev_reason)" = network ]' "$r"
 r=$(FABLE_JEV_BACKEND=jev-cli route active "$MIDDLE")
-check "jev-cli backend accepted when confident" '[ "$(field "$r" actual_route)" = luna_low ] && [ "$(field "$r" jev_backend)" = jev-cli ]' "$r"
+check "jev-cli backend accepted when confident" '[ "$(field "$r" actual_route)" = sol_high ] && [ "$(field "$r" jev_backend)" = jev-cli ]' "$r"
 reset_jev; export STUB_CHOICE=sol_high STUB_CONF=0.9
 r=$(route active '{"objective":"Rework cache invalidation across three services","file_count":6,"multi_component":true,"verification_available":true}')
 check "sol_high maps to gpt-6-sol at high" '[ "$(field "$r" model)/$(field "$r" effort)" = gpt-6-sol/high ]' "$r"
@@ -182,7 +182,7 @@ r=$(route off '{"file_count":2,"verification_available":true,"prior_failures":1,
 check "broad retry: caller --route luna_max is refused" '[ "$(field "$r" override_rejected)" = luna_max_ineligible ]' "$r"
 reset_jev; export STUB_CHOICE=luna_max STUB_CONF=0.99
 r=$(route active "$MIDDLE")
-check "first attempt: Jev is offered luna_low/luna_high/sol_high only; luna_max refused at 0.99" '[ "$(offered)" = "luna_low luna_high sol_high" ] && [ "$(field "$r" actual_route)|$(field "$r" jev_reason)" = "luna_high|unknown_choice" ]' "$r $(offered)"
+check "first attempt: Jev is offered luna_high/sol_high only; luna_max refused at 0.99" '[ "$(offered)" = "luna_high sol_high" ] && [ "$(field "$r" actual_route)|$(field "$r" jev_reason)" = "luna_high|unknown_choice" ]' "$r $(offered)"
 r=$(STUB_CHOICE=claude_opus_high route active "$MIDDLE")
 check "first attempt: Jev cannot send work to Opus" '[ "$(field "$r" actual_route)|$(field "$r" jev_reason)" = "luna_high|unknown_choice" ]' "$r"
 r=$(STUB_CHOICE=claude_opus_high route active '{"file_count":6,"multi_component":true,"verification_available":true,"prior_failures":1}')
@@ -208,11 +208,32 @@ assert set(m.REVIEW_JEV_OPTIONS)=={\"self_review\",\"opus_review\"}
 printf '%s' "$MIDDLE" | python3 "$S/fable-route.py" route --route claude_fable >/dev/null 2>"$T/stderr"; rc=$?
 check "--route claude_fable is refused with a pointer to its replacement" '[ $rc -eq 2 ] && grep -q claude_opus_high "$T/stderr"' "$(cat "$T/stderr")"
 r=$(route off "$MIDDLE")
-check "every new decision carries policy_version 5.5.0" '[ "$(field "$r" policy_version)" = 5.5.0 ] && [ "$(field "$(last_line)" policy_version)" = 5.5.0 ]' "$r"
+check "every new decision carries policy_version 5.6.0" '[ "$(field "$r" policy_version)" = 5.6.0 ] && [ "$(field "$(last_line)" policy_version)" = 5.6.0 ]' "$r"
 reset_jev; export STUB_CHOICE=luna_high STUB_CONF=0.9
 route active '{"file_count":2,"verification_available":true,"prior_failures":1,"opus_failed":false,"architectural_deadlock":false,"judgment_dominated":false}' >/dev/null
 sent=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stdin"])' "$STUB_JEV_LOG")
 check "rule-only consult flags are never sent to Jev" '! grep -qE "opus_failed|architectural_deadlock|judgment_dominated" <<<"$sent"' "$sent"
+
+echo "5.6 routing policy: luna_low is rule-only"
+reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.99
+r=$(route active "$MIDDLE")
+check "first attempt in the middle: luna_low is not offered to Jev" '[ "$(offered)" = "luna_high sol_high" ]' "$(offered)"
+check "active + confident luna_low (0.99) is refused, deterministic route kept" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" jev_status)|$(field "$r" jev_reason)" = "luna_high|legacy|fallback|unknown_choice" ]' "$r"
+r=$(route shadow "$MIDDLE")
+check "shadow: a luna_low answer stays visible as an off-list fallback, route unchanged" '[ "$(field "$r" jev_route)|$(field "$r" jev_status)|$(field "$r" jev_reason)|$(field "$r" actual_route)" = "luna_low|fallback|unknown_choice|luna_high" ]' "$r"
+check "the floor is unchanged: luna_low stays the floor for a verified, known-size, risk-free task" '[ "$(field "$r" floor)" = luna_low ]' "$r"
+reset_jev
+r=$(route active '{"file_count":1,"mechanical":true,"verification_available":true}')
+check "mechanical_one_file still routes to luna_low by rule" '[ "$(field "$r" actual_route)|$(field "$r" rule)|$(field "$r" decided_by)|$(field "$r" effort)" = "luna_low|mechanical_one_file|rule|low" ]' "$r"
+r=$(route off "$MIDDLE" --route luna_low)
+check "a caller may still pick luna_low explicitly above the floor" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)" = "luna_low|caller" ]' "$r"
+check "JEV_EXCLUDED_ROUTES keeps luna_low out of every Jev option list" 'python3 -c "
+import importlib.util; sp=importlib.util.spec_from_file_location(\"fr\",\"$S/fable-route.py\"); m=importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+assert m.JEV_EXCLUDED_ROUTES==(\"luna_low\",)
+for st in ({\"file_count\":4,\"verification_available\":True}, {\"file_count\":1,\"verification_available\":True},
+           {\"file_count\":2,\"verification_available\":True,\"prior_failures\":1}):
+    o=m.jev_route_options(st, m.route_floor(st)); assert \"luna_low\" not in o and \"luna_high\" in o, (st, o)
+"'
 
 echo "Review gate"
 reset_jev; export STUB_CHOICE=none STUB_CONF=0.99
@@ -249,7 +270,7 @@ v=$(review active '{"file_count":5,"lines_changed":900,"verification_passed":tru
 check "Jev review options are self_review/opus_review only" '[ "$(offered)" = "self_review opus_review" ]' "$(offered)"
 check "Jev cannot choose fable_review, even at 0.99" '[ "$(field "$v" review)|$(field "$v" jev_reason)" = "self_review|unknown_choice" ]' "$v"
 v=$(STUB_CHOICE=opus_review review shadow '{"file_count":5,"lines_changed":900,"verification_passed":true}')
-check "shadow review: Jev's opus_review is logged, review stays self_review" '[ "$(field "$v" review)|$(field "$v" jev_route)|$(field "$v" jev_status)|$(field "$v" policy_version)" = "self_review|opus_review|shadow|5.5.0" ]' "$v"
+check "shadow review: Jev's opus_review is logged, review stays self_review" '[ "$(field "$v" review)|$(field "$v" jev_route)|$(field "$v" jev_status)|$(field "$v" policy_version)" = "self_review|opus_review|shadow|5.6.0" ]' "$v"
 
 echo "Ledger and report"
 reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.91
@@ -272,7 +293,7 @@ python3 "$S/routing-report.py" >/dev/null 2>"$T/rep-err"; rc=$?
 check "report survives malformed ledger rows" '[ $rc -eq 0 ]' "$(cat "$T/rep-err")"
 o=$(python3 "$S/fable-route.py" outcome --id "$id" --outcome retry --attempts 2 2>&1); rc=$?
 check "outcome still records against a malformed ledger" '[ $rc -eq 0 ] && [ "$(field "$o" legacy_route)" = luna_high ]' "$o"
-check "an outcome inherits its decision's policy_version" '[ "$(field "$o" policy_version)" = 5.5.0 ]' "$o"
+check "an outcome inherits its decision's policy_version" '[ "$(field "$o" policy_version)" = 5.6.0 ]' "$o"
 echo '{"event":"decision","id":"pre54","legacy_route":"claude_fable","actual_route":"claude_fable","lane":"implementer","model":"fable"}' >> "$FABLE_LEDGER"
 o=$(python3 "$S/fable-route.py" outcome --id pre54 --outcome success 2>&1)
 check "an outcome on a pre-5.4 decision stays unversioned (historical), route kept" '[ -z "$(field "$o" policy_version)" ] && [ "$(field "$o" actual_route)" = claude_fable ]' "$o"
@@ -307,24 +328,24 @@ MIX="$T/mixed.jsonl"
   echo '{"event":"outcome","id":"new4","policy_version":"5.4.0","actual_route":"claude_opus_high","outcome":"success","attempts":1,"duration_s":600}'
   echo '{"event":"review","id":"new4","policy_version":"5.4.0","legacy_review":"opus_review","review":"opus_review","rule":"resisted_two_attempts"}'
   echo '{"event":"attempt","id":"unrouted-1-2","policy_version":"5.4.0","unrouted":true,"lane_status":"ok","duration_s":30,"model":"gpt-6-luna","effort":"xhigh"}'
-  # v5.5 rows: the current policy, which must not absorb any 5.4 evidence
-  echo '{"event":"decision","id":"n55","policy_version":"5.5.0","legacy_route":"claude_opus_high","actual_route":"claude_opus_high","jev_mode":"shadow","jev_status":"skipped","lane":"implementer","model":"opus","effort":"medium"}'
-  echo '{"event":"outcome","id":"n55","policy_version":"5.5.0","actual_route":"claude_opus_high","model":"opus","effort":"medium","outcome":"success","attempts":1,"duration_s":300,"reviewer":"opus-reviewer","reviewer_model":"opus","reviewer_effort":"medium","review_verdict":"fix_first","review_findings":2}'
-  echo '{"event":"decision","id":"n56","policy_version":"5.5.0","legacy_route":"luna_high","actual_route":"luna_high","jev_mode":"shadow","jev_status":"shadow","jev_route":"luna_high","jev_confidence":0.9,"lane":"codex-implementer","model":"gpt-6-luna","effort":"high"}'
-  echo '{"event":"attempt","id":"n56","policy_version":"5.5.0","lane_status":"ok","verify":"fail","duration_s":90,"model":"gpt-6-luna","effort":"high"}'
-  echo '{"event":"attempt","id":"n56","policy_version":"5.5.0","lane_status":"ok","verify":"pass","duration_s":60,"model":"gpt-6-luna","effort":"high"}'
+  # v5.6 rows: the current policy, which must not absorb any 5.4 evidence
+  echo '{"event":"decision","id":"n55","policy_version":"5.6.0","legacy_route":"claude_opus_high","actual_route":"claude_opus_high","jev_mode":"shadow","jev_status":"skipped","lane":"implementer","model":"opus","effort":"medium"}'
+  echo '{"event":"outcome","id":"n55","policy_version":"5.6.0","actual_route":"claude_opus_high","model":"opus","effort":"medium","outcome":"success","attempts":1,"duration_s":300,"reviewer":"opus-reviewer","reviewer_model":"opus","reviewer_effort":"medium","review_verdict":"fix_first","review_findings":2}'
+  echo '{"event":"decision","id":"n56","policy_version":"5.6.0","legacy_route":"luna_high","actual_route":"luna_high","jev_mode":"shadow","jev_status":"shadow","jev_route":"luna_high","jev_confidence":0.9,"lane":"codex-implementer","model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"attempt","id":"n56","policy_version":"5.6.0","lane_status":"ok","verify":"fail","duration_s":90,"model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"attempt","id":"n56","policy_version":"5.6.0","lane_status":"ok","verify":"pass","duration_s":60,"model":"gpt-6-luna","effort":"high"}'
 } > "$MIX"
 rep=$(python3 "$S/routing-report.py" --ledger "$MIX" --json 2>&1); rc=$?
-check "report reads a mixed v5.3/v5.4/v5.5 ledger (historical claude_fable rows included)" '[ $rc -eq 0 ]' "$rep"
-check "policy_version_distribution separates pre-5.4, 5.4.0 and 5.5.0" 'python3 -c "
+check "report reads a mixed v5.3/v5.4/v5.6 ledger (historical claude_fable rows included)" '[ $rc -eq 0 ]' "$rep"
+check "policy_version_distribution separates pre-5.4, 5.4.0 and 5.6.0" 'python3 -c "
 import json,sys; d=json.loads(sys.argv[1]); p=d[\"policy_version_distribution\"]
-assert p[\"decision\"]=={\"pre-5.4\":3,\"5.4.0\":4,\"5.5.0\":2}, p
-assert p[\"attempt\"]=={\"pre-5.4\":2,\"5.4.0\":6,\"5.5.0\":2}, p   # a 5.3 decision keeps its late 5.4-stamped attempt
-assert set(d[\"by_policy_version\"])=={\"pre-5.4\",\"5.4.0\",\"5.5.0\"} and d[\"current_policy_version\"]==\"5.5.0\"
+assert p[\"decision\"]=={\"pre-5.4\":3,\"5.4.0\":4,\"5.6.0\":2}, p
+assert p[\"attempt\"]=={\"pre-5.4\":2,\"5.4.0\":6,\"5.6.0\":2}, p   # a 5.3 decision keeps its late 5.4-stamped attempt
+assert set(d[\"by_policy_version\"])=={\"pre-5.4\",\"5.4.0\",\"5.6.0\"} and d[\"current_policy_version\"]==\"5.6.0\"
 " "$rep"' "$rep"
 check "headline Jev stats are current-policy only; every policy keeps its own section" 'python3 -c "
 import json,sys; d=json.loads(sys.argv[1]); cur=d[\"current_policy\"]; c=d[\"by_policy_version\"][\"5.4.0\"]; old=d[\"by_policy_version\"][\"pre-5.4\"]
-assert cur==d[\"by_policy_version\"][\"5.5.0\"] and cur[\"total_decisions\"]==2 and cur[\"jev\"][\"consulted\"]==1, cur[\"jev\"]
+assert cur==d[\"by_policy_version\"][\"5.6.0\"] and cur[\"total_decisions\"]==2 and cur[\"jev\"][\"consulted\"]==1, cur[\"jev\"]
 assert cur[\"jev\"][\"agreement_with_legacy\"]==1.0, cur[\"jev\"]
 assert c[\"jev\"][\"consulted\"]==3 and old[\"jev\"][\"consulted\"]==2, (c[\"jev\"], old[\"jev\"])
 assert c[\"jev\"][\"agreement_with_legacy\"]==0.0 and old[\"jev\"][\"agreement_with_legacy\"]==0.5, (c[\"jev\"], old[\"jev\"])
@@ -333,7 +354,7 @@ assert \"claude_fable\" not in c[\"route_distribution\"] and old[\"route_distrib
 assert \"note\" in d[\"historical_all\"] and d[\"historical_all\"][\"total_decisions\"]==9
 assert c[\"review\"][\"distribution\"]=={\"opus_review\":1} and old[\"review\"][\"distribution\"]=={\"fable_review\":1}
 " "$rep"' "$rep"
-check "5.5 report: acceptance pass rates, outcomes and review results per model/effort" 'python3 -c "
+check "current report: acceptance pass rates, outcomes and review results per model/effort" 'python3 -c "
 import json,sys; c=json.loads(sys.argv[1])[\"current_policy\"]
 l=c[\"lane_attempts\"][\"by_route\"][\"luna_high\"]
 assert l[\"verify_first_pass\"]==0.0 and l[\"verify_eventually_pass\"]==1.0, l
@@ -440,7 +461,7 @@ check "network lost after work landed -> still a timeout, worktree kept to resum
 discard "$out"
 
 echo "Lane attempts are recorded automatically"
-rid=$(field "$(STUB_CHOICE=luna_low STUB_CONF=0.91 PATH="$JEVBIN:$PATH" route shadow "$MIDDLE" --task "attempt test")" id)
+rid=$(field "$(STUB_CHOICE=sol_high STUB_CONF=0.91 PATH="$JEVBIN:$PATH" route shadow "$MIDDLE" --task "attempt test")" id)
 att() { grep "\"event\":\"attempt\"" "$FABLE_LEDGER" | grep "\"id\":\"$rid\"" | sed -n "${1}p"; }
 spec src/mul.py "$T/spec-mul"
 out=$(STUB_CODEX=quota "$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" --route-id "$rid" 2>/dev/null)
@@ -475,7 +496,7 @@ rep=$(python3 "$S/routing-report.py" --json)
 check "report shows lane attempts per route and shadow disagreements from lanes" 'python3 -c "
 import json,sys; d=json.loads(sys.argv[1])[\"current_policy\"]; l=d[\"lane_attempts\"][\"by_route\"][\"luna_high\"]
 assert l[\"n\"]>=1 and l[\"avg_attempts\"]>=1, l
-assert any(k.startswith(\"jev=luna_low ran=luna_high\") for k in d[\"shadow_disagreement_lanes\"]), d[\"shadow_disagreement_lanes\"]
+assert any(k.startswith(\"jev=sol_high ran=luna_high\") for k in d[\"shadow_disagreement_lanes\"]), d[\"shadow_disagreement_lanes\"]
 " "$rep"' "$rep"
 check "report shows compliance: routed rate, unrouted runs, outcome rates, open decisions" 'python3 -c "
 import json,sys; c=json.loads(sys.argv[1])[\"current_policy\"][\"compliance\"]
@@ -522,7 +543,7 @@ check "luna xhigh backfill is unmapped, never folded into luna_high" '[ "$(field
 discard "$out"
 out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --effort high 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")
-check "luna high backfill -> luna_high, policy_version on decision and attempt" '[ "$(field "$d" actual_route)|$(field "$d" policy_version)|$(field "$(last_attempt)" policy_version)" = "luna_high|5.5.0|5.5.0" ]' "$d"
+check "luna high backfill -> luna_high, policy_version on decision and attempt" '[ "$(field "$d" actual_route)|$(field "$d" policy_version)|$(field "$(last_attempt)" policy_version)" = "luna_high|5.6.0|5.6.0" ]' "$d"
 discard "$out"
 out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --effort low 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")

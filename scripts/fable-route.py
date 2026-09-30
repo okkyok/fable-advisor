@@ -39,7 +39,7 @@ import re
 import sys
 import uuid
 
-POLICY_VERSION = "5.5.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
+POLICY_VERSION = "5.6.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENTS_DIR = os.path.join(os.path.dirname(HERE), "agents")
 sys.dont_write_bytecode = True  # importing jev_route must not litter the plugin directory
@@ -191,6 +191,8 @@ ROUTE_OPTIONS = {
     "claude_opus_high": "Already failed, and what remains is a local judgment or trade-off a written spec "
                         "cannot pin down; the problem itself is understood.",
 }
+# Routes only a rule (or the caller) may choose; never offered to Jev.
+JEV_EXCLUDED_ROUTES = ("luna_low",)
 ROUTE_QUESTION = ("Which implementation route does this coding task need? "
                   "Judge only from the task characteristics given.")
 REVIEWS = ("none", "self_review", "opus_review", "fable_review")
@@ -372,13 +374,19 @@ def route_refusal(route, s, floor):
 def jev_route_options(s, floor):
     """The routes Jev may pick from in the ambiguous middle.
 
-    First attempts: luna_high / sol_high (and luna_low when the floor allows) —
-    Jev never sends a first attempt to Claude. After one failure: luna_high,
-    sol_high, claude_opus_high, and luna_max when eligible. Two failures never
-    reach Jev (hard rule), and Fable is never an option.
+    First attempts: luna_high / sol_high — Jev never sends a first attempt to
+    Claude. After one failure: luna_high, sol_high, claude_opus_high, and
+    luna_max when eligible. Two failures never reach Jev (hard rule), and Fable
+    is never an option.
+
+    luna_low is never a Jev option: only the mechanical_one_file rule picks it
+    (or a caller's explicit --route). Jev applied it to multi-file work it did
+    not fit, and the middle — by definition not the one-file mechanical case —
+    has little to save at low effort.
     """
     return {k: v for k, v in ROUTE_OPTIONS.items()
-            if route_refusal(k, s, floor) is None
+            if k not in JEV_EXCLUDED_ROUTES
+            and route_refusal(k, s, floor) is None
             and not (k == "claude_opus_high" and failures(s) < 1)}
 
 
