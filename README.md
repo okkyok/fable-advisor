@@ -162,7 +162,9 @@ of the decision it joins. Each section has `lane_attempts.by_route` (first-try
 and eventual success, retry rate, average/p50/p90 lane seconds, timeout rate,
 scope violations), `by_model_effort` (the same per attempt, keyed by what
 actually ran, e.g. `gpt-6-luna/max`), outcome stats by route (Opus included),
-Jev's `jev_recommendation_distribution`, agreement, disagreements, confidence
+Jev's `jev_recommendation_distribution` and `recommendation_by_input` (the same,
+split by `prior_failures`, `file_count`, `multi_component` and
+`interface_change` from the decision's `jev_input`), agreement, disagreements, confidence
 buckets, and the shadow counterfactuals — `jev=luna_max ran=luna_high` with how
 the route that actually ran did, and how many of those `active` would have
 adopted. Nothing in an existing ledger is rewritten.
@@ -224,6 +226,28 @@ Review in proportion to blast radius — Opus for risk, Fable only when the
 review itself is contested — and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
+
+## 5.5.1
+
+**The ledger records what Jev was shown (policy stays 5.5.0).** A decision row
+now carries `jev_input`: the exact whitelisted state handed to Jev (rule-only
+flags removed, objective truncated), on `route` and `backfill` decisions in
+`shadow` and `active`. It is absent when Jev is skipped, when the mode is `off`,
+and when the state never reached a backend (`adapter_missing`,
+`executable_missing`, `invalid_backend`, `state_too_large`, `adapter_error`) —
+so no row claims an input Jev did not receive, and an unknown key is never
+logged because it is never sent. `outcome` copies it from the decision like every other
+decision field. Review rows are unchanged. The report adds
+`jev.recommendation_by_input`, e.g. whether a lean to `sol_high` on first
+attempts follows `multi_component` and `file_count` or ignores them.
+
+**Why no policy bump.** `POLICY_VERSION` marks a change in how routes are
+chosen or run, so outcomes on either side of it are not comparable. Here
+routes, rules, floors, Jev's options, question and state are all unchanged —
+only the record grew. A 5.5.1 row and a 5.5.0 row are the same evidence, so they
+stay in one `current_policy` segment instead of splitting the shadow data this
+change exists to analyse. Rows written before 5.5.1 simply have no `jev_input`
+and drop out of `recommendation_by_input` alone.
 
 ## 5.5.0
 
