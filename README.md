@@ -119,6 +119,11 @@ all as environment variables:
 | `FABLE_SENIOR_MODEL` | `opus` | the senior worker (`claude_opus_high`) and senior reviewer (`opus_review`), passed as the spawn's `model` |
 | `FABLE_FRONTIER_MODEL` | `fable` | the frontier advisor (`consult_first`, `fable_review`) |
 | `FABLE_LEDGER` | `~/.claude/fable-advisor/routing.jsonl` | `off` disables the ledger |
+| `FABLE_IMAJEV_MODE` | `off` | `off` \| `shadow`; anything else (including `active`) is `off`. See [Imajev-4B shadow comparison](#imajev-4b-shadow-comparison) |
+| `FABLE_IMAJEV_URL` | `http://127.0.0.1:8765/v1/systemone` | the Imajev server's System One endpoint |
+| `FABLE_IMAJEV_TIMEOUT` | `8` | seconds; same budget as Jev's |
+| `FABLE_IMAJEV_MIN_CONFIDENCE` | `0.80` | only decides `imajev_would_accept`; never a route |
+| `FABLE_IMAJEV_EXPERIMENT_TAG` | *(empty)* | free text logged on every Imajev row, e.g. `mlx-4b-rot4-cal` |
 
 Claude-side **effort** is not an environment variable: the Agent tool takes no
 effort per spawn and Claude Code has no variable for subagent effort, so the only
@@ -176,6 +181,111 @@ Claude-side routes separately), reviews linked to a decision, and the most
 recent decisions still open. If the routed share stays under ~90% or the outcome
 rate under ~70%, the next step is a warning hook — not before.
 
+## Imajev-4B shadow comparison
+
+The question this answers: can Jev be replaced by
+[Imajev-4B](https://github.com/mohit67890/imajev), an open-weight model that
+serves Jev's System One contract locally? Not by switching — by running both in
+shadow on the same real tasks for a while, then reading the comparison.
+
+```bash
+export FABLE_JEV_MODE=shadow
+export FABLE_IMAJEV_MODE=shadow
+export FABLE_IMAJEV_URL=http://127.0.0.1:8765/v1/systemone
+export FABLE_IMAJEV_EXPERIMENT_TAG=mlx-4b-rot4-cal
+```
+
+- **Same decision, by construction.** Imajev is asked at exactly the points
+  Jev is (ambiguous `route`, `backfill` and `review` decisions — never an
+  obvious one, never a caller override) and is handed the *same* question,
+  the *same* state object and the *same* option map: the whitelist, the
+  rule-only filter, the 280-character objective and the 2 KB state cap all
+  apply before either model sees anything. Imajev's larger limits are not used.
+- **Log-only.** There is no `active` mode. Imajev's answer is written as
+  `imajev_*` beside `jev_*` on the same row; it never changes a route or a
+  review, whatever the Jev mode (`active` Jev behaves exactly as before).
+- **Concurrent.** Both calls start before either is awaited, so the added
+  latency is the slower of the two, not their sum. Imajev runs on a daemon
+  thread with a hard deadline (`FABLE_IMAJEV_TIMEOUT` + 1 s).
+- **Failures cost only that answer.** A stopped server, a timeout, an HTTP
+  error, malformed JSON, a missing answer or confidence, an off-list choice:
+  `imajev_status: fallback` with an `imajev_reason`, Jev and the route
+  untouched. Either model can fail without affecting the other.
+- **Off by default.** Updating never starts talking to a local server.
+  Off never imports `scripts/imajev_route.py` and opens no socket. Standard
+  library only (`urllib`); a loopback URL bypasses `HTTP(S)_PROXY`.
+
+Row fields (absent when `FABLE_IMAJEV_MODE=off`; `None` values are not written):
+
+| Field | |
+|---|---|
+| `imajev_mode`, `imajev_experiment_tag` | `shadow`; the tag when set |
+| `imajev_status` | `shadow` (answered) · `fallback` (no usable answer) · `skipped` (obvious case) |
+| `imajev_reason` | shadow: `abstained`, `low_confidence`, or absent. fallback: `unavailable`, `timeout`, `http_<status>`, `malformed`, `missing_answer`, `no_confidence`, `unknown_choice`, `invalid_url`, `state_too_large`, `adapter_missing`, `adapter_error` |
+| `imajev_route`, `imajev_confidence` | its choice and confidence (an off-list choice is kept on a fallback) |
+| `imajev_would_accept` | `true` only if on-list, not abstained and confidence ≥ `FABLE_IMAJEV_MIN_CONFIDENCE` |
+| `imajev_probabilities` | one probability per *offered* option, nothing else |
+| `imajev_unknown_probability`, `imajev_abstained` | Imajev's trained "can't tell" mass, and whether it was the top outcome. An abstention keeps its top choice in `imajev_route` |
+| `imajev_latency_ms`, `imajev_server_ms` | client wall clock (comparable with `jev_latency_ms`); the server's `usage.total_ms` |
+| `imajev_model`, `imajev_backend`, `imajev_calibration_version` | e.g. `imajev-4b`, `imajev-local`, the calibration file's version when served with one |
+| `imajev_input` | the state Imajev was sent — on `route`/`backfill` rows, equal to `jev_input`; absent when nothing was sent. Review rows log no state for either model |
+
+`outcome` copies them from the decision, and from the review as
+`review_imajev_*`. `routing-report.py` adds, per policy version:
+
+- `imajev` — the `jev` block's measurements (consulted, fallback reasons,
+  recommendation distribution, agreement with the deterministic route,
+  `would_accept_in_active`, latency, `recommendation_by_input`) plus
+  `avg_confidence`, `confidence_buckets`, `abstain_rate`,
+  `avg_unknown_probability`, `avg_top2_margin`, its own shadow
+  counterfactuals and `by_experiment_tag`, so runs at different rotations or
+  calibrations are never pooled unseen.
+- `decision_model_comparison` — on rows both models answered: agreement rate,
+  `route_pairs`, agreement with the deterministic route, paired latency and
+  confidence, `would_accept_in_active`, Imajev's abstain rate, rows only one
+  model answered, `agreement_by_input`, and `disagreement_evidence` keyed
+  `jev=… imajev=… ran=…`. `review.model_comparison` is the same for reviews.
+
+**No accuracy.** In shadow only `actual_route` ran. If Luna High succeeded
+while Jev said `luna_high` and Imajev said `sol_high`, Sol might have succeeded
+too, so the report never scores either model as right or wrong. It shows
+agreement, confidence, latency and abstention, and keeps what the route that
+ran did (`ran=`) as evidence, separate from the recommendations.
+
+### Running Imajev-4B on a Mac (Apple silicon, MLX)
+
+From the official README's Quickstart (checked against
+[mohit67890/imajev](https://github.com/mohit67890/imajev) at `ccf586d`,
+1 Oct 2026 — check it again before you start, the flags move):
+
+```sh
+git clone https://github.com/mohit67890/imajev && cd imajev
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -e ".[serve,mlx]"
+python scripts/download_model.py --model 4b
+hf download mohit67890/imajev-4b --local-dir adapters/imajev-4b
+PYTHONPATH=src:scripts python scripts/playground/server.py --model-bundle artifacts/model-qwen4b.json \
+  --adapter adapters/imajev-4b/mlx --calibration adapters/imajev-4b/calibration.json \
+  --model-name imajev-4b --rotations 4 --port 8765
+```
+
+For a comparison that resembles the published numbers, serve the **4B** with
+its **calibration file** and **state the rotations**: the README's own figures
+use `--rotations 4` with `--calibration` (about 3× the latency of one
+rotation), the official JevBench setup uses `--rotations 1` with the same
+calibration file. Pick one per experiment and say so in the tag
+(`mlx-4b-rot4-cal`, `mlx-4b-rot1-cal`); change the tag whenever the server
+flags change. Check the server with `python3 scripts/imajev_route.py probe`
+(one trivial request to `FABLE_IMAJEV_URL`).
+
+**Ending the experiment.** Keep Jev: `export FABLE_IMAJEV_MODE=off` and delete
+`scripts/imajev_route.py`. Move to Imajev: that is a policy change (a new
+`POLICY_VERSION`), and the work is to give `consult_jev()` an Imajev backend
+(the adapter already returns the same shape as `jev_route.classify()`), then
+remove the Imajev shadow pieces — `imajev_start`/`imajev_finish`/`consult` in
+`fable-route.py`, the `FABLE_IMAJEV_*` block in `fable-config.sh`, and the
+`imajev`/`decision_model_comparison` blocks in `routing-report.py`.
+
 ## Install
 
 ```
@@ -199,11 +309,12 @@ caller reroutes; it never silently substitutes a different model.
 | `scripts/lane-preamble.md` | What codex reads before every spec: no delegation, the handoff file, NEED_TOOL, acceptance. Sent by `codex-lane.sh`, so no caller pastes it. |
 | `scripts/prompt-budget.py` | Estimated tokens per prompt surface and per execution path (normal codex task, senior worker, review, Fable), against any git revision with `--ref`. |
 | `scripts/jev_route.py` | The only Jev-specific file: a typed-choice adapter over semdecide / jev-cli. Never imported when Jev is off. |
-| `scripts/routing-report.py` | Ledger summary per policy version: route and model/effort success, retries, p50/p90 duration and timeouts; Jev recommendations, agreement, confidence buckets and shadow counterfactuals. |
+| `scripts/imajev_route.py` | Imajev shadow adapter: `POST /v1/systemone` over the standard library, the same contract as `jev_route.py` plus probabilities, `unknown_probability` and `abstained`. Never imported when `FABLE_IMAJEV_MODE` is off. |
+| `scripts/routing-report.py` | Ledger summary per policy version: route and model/effort success, retries, p50/p90 duration and timeouts; Jev recommendations, agreement, confidence buckets and shadow counterfactuals; Imajev's, and Jev vs Imajev head to head. |
 | `scripts/codex-lane.sh` | Runs a Codex lane inside an isolated worktree with `--model`/`--effort` from the caller, runs the acceptance command (`--verify`), and reports what it touched, inside and outside the expected scope (`--strict-scope` makes Files an allowlist). With `--route-id` it records every run in the ledger itself. |
 | `scripts/codex-lane-apply.sh` | Lands a lane in the main tree: its scope plus any extra path codex named, never a strict-scope violation, never a lane that failed acceptance (without `--force`), never over a file the main tree changed since the lane started. Purely additive — never checkout/reset/clean/stash. |
 | `scripts/verify-codex-lane.sh` | End-to-end check: runs a real lane against a scratch repo and asserts a co-resident lane's uncommitted work survives. |
-| `tests/run.sh` | Offline suite (stub codex and Jev): routing in all three modes, every fallback, hard rules, `luna_max` eligibility, Opus escalation, Fable consult triggers, review gate, ledger, policy-versioned report, backfill, lane model/effort, expected/strict scope, harness acceptance, apply guards, isolation, concurrent lanes, prompt budgets. |
+| `tests/run.sh` | Offline suite (stub codex and Jev, a loopback Imajev stub server): routing in all three modes, Imajev shadow (same input, every failure, concurrency), every fallback, hard rules, `luna_max` eligibility, Opus escalation, Fable consult triggers, review gate, ledger, policy-versioned report, backfill, lane model/effort, expected/strict scope, harness acceptance, apply guards, isolation, concurrent lanes, prompt budgets. |
 | `agents/opus-reviewer` | `opus_review`: read-only senior reviewer (Opus, effort pinned `high`), fresh-context review with the silence gap; a second pass only when needed. |
 | `agents/fable-advisor` | Read-only frontier consult and exceptional reviewer (Fable 5): reframes stuck problems, never implements. Holds no write tools, so "advises only" is mechanical rather than aspirational. |
 
@@ -226,6 +337,25 @@ Review in proportion to blast radius — Opus for risk, Fable only when the
 review itself is contested — and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
+
+## 5.5.2
+
+**Imajev-4B shadow comparison (policy stays 5.5.0).** `FABLE_IMAJEV_MODE=shadow`
+asks a local [Imajev](https://github.com/mohit67890/imajev) server the same
+question, with the same state and options, at the same `route`, `backfill` and
+`review` decisions Jev is asked about, concurrently with Jev, and logs the
+answer as `imajev_*` beside `jev_*` — see
+[Imajev-4B shadow comparison](#imajev-4b-shadow-comparison). New:
+`scripts/imajev_route.py`, the `FABLE_IMAJEV_*` settings (`off` by default),
+the report's `imajev` and `decision_model_comparison` blocks and review-side
+Imajev counts. Unchanged: every `jev_*` field and the `jev` report block, Jev's
+`off`/`shadow`/`active` behaviour, routes, rules, floors, eligibility, options,
+question and state. With `FABLE_IMAJEV_MODE=off` a row is byte-for-byte the
+5.5.1 shape.
+
+**Why no policy bump.** Same reason as 5.5.1: no decision is made differently,
+so 5.5.0, 5.5.1 and 5.5.2 rows are one body of evidence. Splitting them would
+split the Jev shadow data this comparison is measured against.
 
 ## 5.5.1
 

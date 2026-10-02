@@ -26,6 +26,12 @@ FABLE_JEV_MODE=off the Jev adapter (jev_route.py) is never imported, no binary i
 looked up and no credential is read — deleting the adapter file leaves off mode
 fully working.
 
+FABLE_IMAJEV_MODE=shadow adds a measurement beside Jev, nothing more: at the
+same decisions Jev is asked about (never the obvious ones), Imajev is sent the
+same question, the same state object and the same options, and its answer is
+logged as imajev_*. It runs concurrently with Jev and can never change a route
+or a review. Off (the default) never imports imajev_route.py or opens a socket.
+
 Requires only the Python 3.8+ standard library.
 """
 from __future__ import annotations
@@ -37,6 +43,8 @@ import math
 import os
 import re
 import sys
+import threading
+import time
 import uuid
 
 POLICY_VERSION = "5.5.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
@@ -70,27 +78,42 @@ def jev_mode():
     return "off"
 
 
-def min_confidence():
+def min_confidence(var="FABLE_JEV_MIN_CONFIDENCE", who="Jev"):
     try:
-        value = float(os.environ["FABLE_JEV_MIN_CONFIDENCE"])
+        value = float(os.environ[var])
         if 0.0 <= value <= 1.0:
             return value
     except ValueError:
         pass
     # A broken threshold must reject every Jev answer, never accept every one.
-    warn("invalid FABLE_JEV_MIN_CONFIDENCE; every Jev decision will be rejected")
+    warn("invalid %s; every %s decision will be rejected" % (var, who))
     return math.inf
 
 
-def jev_timeout():
+def jev_timeout(var="FABLE_JEV_TIMEOUT"):
     try:
-        value = float(os.environ["FABLE_JEV_TIMEOUT"])
+        value = float(os.environ[var])
         if 0 < value <= 60:
             return value
     except ValueError:
         pass
-    warn("FABLE_JEV_TIMEOUT must be in (0, 60]; using 8")
+    warn("%s must be in (0, 60]; using 8" % var)
     return 8.0
+
+
+def imajev_mode():
+    mode = os.environ.get("FABLE_IMAJEV_MODE", "off").strip().lower()
+    if mode in ("off", "shadow"):
+        return mode
+    # Imajev is measurement only: there is no active mode, and nothing unknown
+    # may start network calls.
+    warn("unknown FABLE_IMAJEV_MODE=%r (off | shadow); using off" % mode)
+    return "off"
+
+
+def experiment_tag():
+    """FABLE_IMAJEV_EXPERIMENT_TAG as logged, or None when unset."""
+    return os.environ.get("FABLE_IMAJEV_EXPERIMENT_TAG", "").strip()[:64] or None
 
 
 # --- decision state -------------------------------------------------------------
@@ -462,6 +485,88 @@ def jev_input(fields, state):
     return None if fields.get("jev_reason") in JEV_NOT_SENT else state
 
 
+# --- Imajev shadow: the same decision, logged only ---------------------------------
+
+def imajev_start(question, state, options):
+    """Start an Imajev call in the background; imajev_finish() collects it.
+
+    A daemon thread, so a server that never answers cannot hold the process
+    open; the join in imajev_finish is the hard deadline. Nothing here raises.
+    """
+    sys.path.insert(0, HERE)
+    try:
+        import imajev_route  # noqa: E402 — lazy by design: off mode never imports it
+    except Exception:
+        return {"result": {"ok": False, "reason": "adapter_missing"}}
+    timeout = jev_timeout("FABLE_IMAJEV_TIMEOUT")
+    box = {"started": time.monotonic(), "deadline": time.monotonic() + timeout + 1.0}
+
+    def run():
+        try:
+            box["result"] = imajev_route.classify(question, state, options, timeout)
+        except Exception:
+            box["result"] = {"ok": False, "reason": "adapter_error"}
+
+    box["thread"] = threading.Thread(target=run, name="imajev-shadow", daemon=True)
+    box["thread"].start()
+    return box
+
+
+def imajev_finish(box, options):
+    """imajev_* ledger fields for a started call. Shadow only: never a route."""
+    thread = box.get("thread")
+    if thread is not None:
+        thread.join(max(0.0, box["deadline"] - time.monotonic()))
+    result = box.get("result")
+    if not isinstance(result, dict):  # still running past its deadline
+        result = {"ok": False, "reason": "timeout",
+                  "latency_ms": int((time.monotonic() - box["started"]) * 1000)}
+    fields = {"imajev_backend": result.get("backend"), "imajev_model": result.get("model"),
+              "imajev_latency_ms": result.get("latency_ms")}
+    if not result.get("ok"):
+        fields.update(imajev_status="fallback", imajev_reason=result.get("reason") or "error",
+                      imajev_route=result.get("choice"), imajev_confidence=result.get("confidence"))
+        return fields
+    choice, confidence = result["choice"], result["confidence"]
+    fields.update(imajev_route=choice, imajev_confidence=round(confidence, 4),
+                  imajev_server_ms=result.get("server_ms"),
+                  imajev_probabilities=result.get("probabilities") or None,
+                  imajev_unknown_probability=result.get("unknown_probability"),
+                  imajev_abstained=result.get("abstained"),
+                  imajev_calibration_version=result.get("calibration_version"))
+    reason = None
+    if choice not in options:
+        reason = "unknown_choice"
+    elif result.get("abstained") is True:
+        reason = "abstained"  # its top choice is kept above, but it said it cannot tell
+    elif confidence < min_confidence("FABLE_IMAJEV_MIN_CONFIDENCE", "Imajev"):
+        reason = "low_confidence"
+    fields.update(imajev_status="shadow", imajev_would_accept=reason is None, imajev_reason=reason)
+    return fields
+
+
+# Fallbacks raised before the state reached the server: Imajev read nothing.
+IMAJEV_NOT_SENT = ("adapter_missing", "adapter_error", "invalid_url", "state_too_large", "unavailable")
+
+
+def imajev_input(fields, state):
+    """The state as Imajev read it — the very object Jev was given — or None."""
+    return None if fields.get("imajev_reason") in IMAJEV_NOT_SENT else state
+
+
+def consult(jev, imajev, question, state, options):
+    """Jev exactly as before, plus Imajev (shadow) on the same question, state and options.
+
+    Both start before either is awaited, so the added wait is the slower of the
+    two, not their sum. Only Jev's choice is returned; Imajev only adds fields.
+    """
+    pending = imajev_start(question, state, options) if imajev == "shadow" else None
+    fields, choice = consult_jev(jev, question, state, options) if jev != "off" else ({}, None)
+    if pending is not None:
+        fields.update(imajev_finish(pending, options))
+    return fields, choice
+
+
 # --- ledger -------------------------------------------------------------------------
 
 def ledger_path():
@@ -513,15 +618,32 @@ def emit(record):
 
 # --- commands -------------------------------------------------------------------------
 
+def skip(record, mode, imode):
+    """An obvious case: rules decide it, and neither model is asked."""
+    if mode != "off":
+        record["jev_status"] = "skipped"
+    if imode != "off":
+        record["imajev_status"] = "skipped"
+
+
+def log_inputs(record, fields, state, mode, imode):
+    if mode != "off":
+        record["jev_input"] = jev_input(fields, state)
+    if imode != "off":
+        record["imajev_input"] = imajev_input(fields, state)
+
+
 def cmd_route(args, text):
     state, ignored = parse_state(text, ROUTE_FIELDS)
-    mode = jev_mode()
+    mode, imode = jev_mode(), imajev_mode()
     legacy, rule, obvious = deterministic_route(state)
     floor = route_floor(state)
     record = {"event": "decision", "id": uuid.uuid4().hex[:12], "ts": now(),
               "policy_version": POLICY_VERSION,
               "task": args.task or state.get("objective", "")[:80], "class": args.cls,
               "jev_mode": mode, "legacy_route": legacy, "rule": rule, "floor": floor}
+    if imode != "off":
+        record.update(imajev_mode=imode, imajev_experiment_tag=experiment_tag())
     if luna_max_eligible(state):
         record["luna_max_eligible"] = True
     actual, decided_by = legacy, "rule" if obvious else "legacy"
@@ -532,14 +654,15 @@ def cmd_route(args, text):
             record["override_rejected"] = refusal
         else:
             actual, decided_by = args.route, "caller"
-    elif mode != "off":
+    elif mode != "off" or imode != "off":
         if obvious:
-            record["jev_status"] = "skipped"
+            skip(record, mode, imode)
         else:
             options = jev_route_options(state, floor)
             jev_state = {k: v for k, v in state.items() if k not in ROUTE_RULE_ONLY}
-            fields, choice = consult_jev(mode, ROUTE_QUESTION, jev_state, options)
-            record.update(fields, jev_input=jev_input(fields, jev_state))
+            fields, choice = consult(mode, imode, ROUTE_QUESTION, jev_state, options)
+            record.update(fields)
+            log_inputs(record, fields, jev_state, mode, imode)
             # consult_jev only accepts a choice from `options`; the refusal check
             # is repeated so no future option list can smuggle past the floor.
             if choice is not None and route_refusal(choice, state, floor) is None:
@@ -603,7 +726,7 @@ def cmd_backfill(args):
         state["objective"] = args.objective[:OBJECTIVE_MAX]
     if args.verification:
         state["verification_available"] = True
-    mode = jev_mode()
+    mode, imode = jev_mode(), imajev_mode()
     legacy, rule, obvious = deterministic_route(state)
     actual = observed_route(args.model, args.effort)
     record = {"event": "decision", "id": uuid.uuid4().hex[:12], "ts": now(),
@@ -611,13 +734,16 @@ def cmd_backfill(args):
               "task": args.task or state.get("objective", "")[:80], "class": "implement",
               "jev_mode": mode, "legacy_route": legacy, "rule": rule, "floor": route_floor(state),
               "backfilled": True}
-    if mode != "off":
+    if imode != "off":
+        record.update(imajev_mode=imode, imajev_experiment_tag=experiment_tag())
+    if mode != "off" or imode != "off":
         if obvious:
-            record["jev_status"] = "skipped"
+            skip(record, mode, imode)
         else:
             options = jev_route_options(state, record["floor"])
-            fields, _ = consult_jev("shadow", ROUTE_QUESTION, state, options)
-            record.update(fields, jev_input=jev_input(fields, state))
+            fields, _ = consult("shadow" if mode != "off" else "off", imode, ROUTE_QUESTION, state, options)
+            record.update(fields)
+            log_inputs(record, fields, state, mode, imode)
     record.update(actual_route=actual, decided_by="lane", lane="codex-implementer",
                   model=args.model, effort=args.effort)
     append(record)
@@ -642,19 +768,22 @@ def cmd_review(args, text):
         verdict = lane_verification(args.id)
         if verdict:
             state["verification_passed"], source = verdict == "pass", "lane"
-    mode = jev_mode()
+    mode, imode = jev_mode(), imajev_mode()
     legacy, rule, obvious = deterministic_review(state)
     record = {"event": "review", "id": args.id or uuid.uuid4().hex[:12], "ts": now(),
               "policy_version": POLICY_VERSION,
               "task": args.task, "jev_mode": mode, "legacy_review": legacy, "rule": rule,
               "verification_source": source}
+    if imode != "off":
+        record.update(imajev_mode=imode, imajev_experiment_tag=experiment_tag())
     actual, decided_by = legacy, "rule" if obvious else "legacy"
-    if mode != "off":
+    if mode != "off" or imode != "off":
         if obvious:
-            record["jev_status"] = "skipped"
+            skip(record, mode, imode)
         else:
+            # Review rows log no state for either model (unchanged for Jev).
             jev_state = {k: v for k, v in state.items() if k not in REVIEW_RULE_ONLY}
-            fields, choice = consult_jev(mode, REVIEW_QUESTION, jev_state, REVIEW_JEV_OPTIONS)
+            fields, choice = consult(mode, imode, REVIEW_QUESTION, jev_state, REVIEW_JEV_OPTIONS)
             record.update(fields)
             if choice in REVIEW_JEV_OPTIONS:
                 actual, decided_by = choice, "jev"
@@ -713,7 +842,7 @@ def cmd_outcome(args):
         if key in ("legacy_review", "review", "review_decided_by", "reviewer", "reviewer_model",
                    "reviewer_effort", "reviewer_role"):
             record[key] = value
-        elif key.startswith("jev_"):
+        elif key.startswith(("jev_", "imajev_")):
             record["review_" + key] = value
     # Lane runs recorded by codex-lane.sh fill in what the caller left out.
     lane_seconds = [a["duration_s"] for a in attempts
@@ -733,6 +862,7 @@ def cmd_config(_args):
     info = {k: os.environ[k] for k in sorted(os.environ) if k.startswith("FABLE_")}
     info["policy_version"] = POLICY_VERSION
     info["jev_mode_effective"] = jev_mode()
+    info["imajev_mode_effective"] = imajev_mode()  # never probed here: shadow only, and a probe is a network call
     info["ledger_effective"] = ledger_path()
     if info["jev_mode_effective"] != "off":  # never probe when off
         sys.path.insert(0, HERE)
