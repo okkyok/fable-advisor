@@ -4,15 +4,18 @@
 # escalation, Fable consult triggers, strict scope), Jev modes and fallbacks,
 # review gate (self/opus/fable), ledger and the policy-versioned report,
 # backfill, the codex lane's model/effort, expected/strict scope, harness
-# acceptance and apply guards, isolation, and prompt-surface budgets.
-# Uses stub `codex`, `semdecide` and `jev` binaries; needs no network, no
-# credentials, and no real Codex or Jev install. Run: tests/run.sh
+# acceptance and apply guards, isolation, prompt-surface budgets, and the
+# Imajev shadow comparison (same decision as Jev, log-only, every failure).
+# Uses stub `codex`, `semdecide` and `jev` binaries and a loopback Imajev stub
+# server; needs no external network, no credentials, and no real Codex, Jev or
+# Imajev install. Run: tests/run.sh
 set -uo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 S="$ROOT/scripts"
 T=$(mktemp -d "${TMPDIR:-/tmp}/fable-tests.XXXXXX")
-trap '[ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT   # KEEP=1 keeps the scratch ledger for inspection
+IMAJEV_PID=""
+trap '[ -z "$IMAJEV_PID" ] || kill "$IMAJEV_PID" 2>/dev/null; [ -n "${KEEP:-}" ] || rm -rf "$T"' EXIT   # KEEP=1 keeps the scratch ledger for inspection
 export TMPDIR="$T/tmp"; mkdir -p "$TMPDIR"   # lane worktrees land inside $T and go with it
 pass=0 fail=0
 ok() { pass=$((pass + 1)); printf '  \033[32m✓\033[0m %s\n' "$1"; }
@@ -385,6 +388,268 @@ assert c[\"by_route\"][\"claude_opus_high\"][\"p50_duration_s\"]==600
 txt=$(python3 "$S/routing-report.py" --ledger "$MIX" 2>&1); rc=$?
 check "text report renders nested sections" '[ $rc -eq 0 ] && grep -q "^current_policy:" <<<"$txt" && grep -q "^by_policy_version:" <<<"$txt" && grep -q "^  pre-5.4:" <<<"$txt"' "$txt"
 
+echo "Imajev shadow: configuration"
+PATH="$JEVBIN:$BASE"; reset_jev
+export STUB_IMAJEV_CTL="$T/imajev-ctl.json" STUB_IMAJEV_LOG="$T/imajev-call.json" STUB_IMAJEV_MARK="$T/imajev-called"
+python3 "$ROOT/tests/stubs/imajevstub" "$T/imajev-port" & IMAJEV_PID=$!
+i=0; while [ ! -s "$T/imajev-port" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+IMAJEV_URL="http://127.0.0.1:$(cat "$T/imajev-port")/v1/systemone"
+DEAD_URL="http://127.0.0.1:$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')/v1/systemone"
+export FABLE_IMAJEV_URL="$IMAJEV_URL"
+reset_imajev() { rm -f "$STUB_IMAJEV_MARK" "$STUB_IMAJEV_LOG"; printf '{}' > "$STUB_IMAJEV_CTL"; }
+imajev_says() { printf '%s' "$1" > "$STUB_IMAJEV_CTL"; }
+dual() {  # dual <jev mode> <imajev mode> <state> [route args...]
+  local jm=$1 im=$2 state=$3; shift 3
+  printf '%s' "$state" | FABLE_JEV_MODE=$jm FABLE_IMAJEV_MODE=$im python3 "$S/fable-route.py" route "$@" 2>"$T/stderr"
+}
+no_imajev_fields() { ! grep -q '"imajev_' <<<"$1"; }
+reset_imajev
+c=$(FABLE_IMAJEV_URL= python3 "$S/fable-route.py" config)
+check "default FABLE_IMAJEV_MODE is off, URL is the local System One endpoint" '[ "$(field "$c" FABLE_IMAJEV_MODE)|$(field "$c" imajev_mode_effective)|$(field "$c" FABLE_IMAJEV_URL)" = "off|off|http://127.0.0.1:8765/v1/systemone" ]' "$c"
+check "config never contacts Imajev" '[ ! -e "$STUB_IMAJEV_MARK" ]'
+export STUB_CHOICE=luna_low STUB_CONF=0.91
+r=$(route shadow "$MIDDLE")
+check "unset FABLE_IMAJEV_MODE: Imajev never contacted, no imajev_* on the row, Jev shadow as before" '[ ! -e "$STUB_IMAJEV_MARK" ] && no_imajev_fields "$(last_line)" && [ "$(field "$r" jev_status)|$(field "$r" actual_route)" = "shadow|luna_high" ]' "$(last_line)"
+for m in bogus active ACTIVE; do
+  r=$(dual shadow "$m" "$MIDDLE")
+  check "FABLE_IMAJEV_MODE=$m is treated as off (no active mode), with a warning" '[ ! -e "$STUB_IMAJEV_MARK" ] && no_imajev_fields "$(last_line)" && grep -q FABLE_IMAJEV_MODE "$T/stderr" && [ "$(field "$r" actual_route)" = luna_high ]' "$r"
+done
+reset_jev; reset_imajev
+r=$(dual off off "$MIDDLE")
+check "both off: deterministic route, neither model contacted" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)" = "luna_high|legacy" ] && [ ! -e "$STUB_IMAJEV_MARK" ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
+r=$(printf '%s' "$MIDDLE" | FABLE_JEV_MODE=off FABLE_IMAJEV_MODE=off python3 "$T/noadapter/fable-route.py" route)
+check "off works with imajev_route.py absent" '[ "$(field "$r" actual_route)" = luna_high ]' "$r"
+r=$(printf '%s' "$MIDDLE" | FABLE_JEV_MODE=off FABLE_IMAJEV_MODE=shadow python3 "$T/noadapter/fable-route.py" route 2>/dev/null)
+check "adapter missing in shadow -> imajev fallback adapter_missing, route kept, no imajev_input" '[ "$(field "$r" imajev_status)|$(field "$r" imajev_reason)|$(field "$r" actual_route)" = "fallback|adapter_missing|luna_high" ] && [ -z "$(field "$r" imajev_input)" ]' "$r"
+
+echo "Imajev shadow: answers are logged, never used"
+reset_jev; reset_imajev
+r=$(dual off shadow "$MIDDLE")
+row=$(last_line)
+check "Imajev's choice is logged; the actual route does not change" '[ "$(field "$row" imajev_route)|$(field "$row" imajev_status)|$(field "$row" actual_route)|$(field "$row" decided_by)" = "luna_low|shadow|luna_high|legacy" ]' "$row"
+check "row keeps confidence, model, backend, latency, server time, unknown, abstained, would_accept" 'python3 -c "
+import json,sys; r=json.loads(sys.argv[1])
+assert r[\"imajev_confidence\"]==0.91 and r[\"imajev_model\"]==\"imajev-4b\" and r[\"imajev_backend\"]==\"imajev-local\", r
+assert isinstance(r[\"imajev_latency_ms\"], int) and r[\"imajev_server_ms\"]==12.3, r
+assert r[\"imajev_unknown_probability\"]==0.01 and r[\"imajev_abstained\"] is False and r[\"imajev_would_accept\"] is True, r
+assert r[\"imajev_mode\"]==\"shadow\" and r[\"imajev_calibration_version\"]==\"stub-cal\" and \"imajev_reason\" not in r, r
+" "$row"' "$row"
+check "probabilities: one per offered option, off-list keys dropped" 'python3 -c "
+import json,sys; r=json.loads(sys.argv[1]); p=r[\"imajev_probabilities\"]
+assert set(p)=={\"luna_low\",\"luna_high\",\"sol_high\"} and p[\"luna_low\"]==0.9, p
+" "$row"' "$row"
+check "jev off: no jev_* fields are written beside imajev_*" '! grep -qE "\"jev_(status|route|input|reason)\"" <<<"$row"' "$row"
+check "no experiment tag set: the field is omitted" '! grep -q imajev_experiment_tag <<<"$row"' "$row"
+r=$(FABLE_IMAJEV_EXPERIMENT_TAG=mlx-4b-rot4-cal dual off shadow "$MIDDLE")
+check "FABLE_IMAJEV_EXPERIMENT_TAG is logged and changes nothing else" '[ "$(field "$r" imajev_experiment_tag)|$(field "$r" actual_route)" = "mlx-4b-rot4-cal|luna_high" ]' "$r"
+imajev_says '{"conf":0.5}'
+r=$(dual off shadow "$MIDDLE")
+check "low confidence: shadow, reason low_confidence, would_accept false" '[ "$(field "$r" imajev_status)|$(field "$r" imajev_reason)|$(field "$r" imajev_would_accept)|$(field "$r" actual_route)" = "shadow|low_confidence|False|luna_high" ]' "$r"
+r=$(FABLE_IMAJEV_MIN_CONFIDENCE=0.4 dual off shadow "$MIDDLE")
+check "FABLE_IMAJEV_MIN_CONFIDENCE only moves would_accept" '[ "$(field "$r" imajev_would_accept)|$(field "$r" actual_route)" = "True|luna_high" ]' "$r"
+imajev_says '{"choice":"sol_high","conf":0.97,"abstained":true,"unknown":0.6}'
+r=$(dual off shadow "$MIDDLE")
+check "abstained: shadow, reason abstained, would_accept false, choice and unknown kept, route unchanged" '[ "$(field "$r" imajev_status)|$(field "$r" imajev_reason)|$(field "$r" imajev_would_accept)|$(field "$r" imajev_abstained)|$(field "$r" imajev_unknown_probability)|$(field "$r" imajev_route)|$(field "$r" actual_route)" = "shadow|abstained|False|True|0.6|sol_high|luna_high" ]' "$r"
+reset_imajev
+r=$(dual off shadow '{"file_count":1,"mechanical":true,"verification_available":true}')
+check "obvious case: Imajev skipped too, never contacted" '[ "$(field "$r" imajev_status)|$(field "$r" actual_route)" = "skipped|luna_low" ] && [ ! -e "$STUB_IMAJEV_MARK" ] && ! grep -q imajev_input <<<"$r"' "$r"
+r=$(dual shadow shadow '{"file_count":3,"prior_failures":2,"verification_available":true}')
+check "hard rule (two failures): both skipped, neither contacted" '[ "$(field "$r" jev_status)|$(field "$r" imajev_status)|$(field "$r" actual_route)" = "skipped|skipped|claude_opus_high" ] && [ ! -e "$STUB_IMAJEV_MARK" ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
+r=$(dual shadow shadow "$MIDDLE" --route sol_high)
+check "caller override: neither model is asked, as before" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)" = "sol_high|caller" ] && [ -z "$(field "$r" imajev_status)" ] && [ ! -e "$STUB_IMAJEV_MARK" ]' "$r"
+
+echo "Imajev shadow: Jev and Imajev get the same decision"
+reset_jev; reset_imajev; export STUB_CHOICE=luna_high STUB_CONF=0.9
+long=$(python3 -c 'print("x"*2000)')
+r=$(dual shadow shadow "{\"objective\":\"$long\",\"file_count\":4,\"verification_available\":true,\"interface_change\":true,\"diff\":\"SECRET_DIFF\",\"context_bound\":false,\"strict_scope\":true,\"opus_failed\":false}")
+row=$(last_line)
+check "both models called for the same ambiguous decision" '[ -e "$STUB_JEV_MARK" ] && [ -e "$STUB_IMAJEV_MARK" ]'
+same_decision() {  # Jev's stdin/argv and Imajev's request body: identical state, question, options and descriptions
+  python3 -c '
+import json,sys
+jev=json.load(open(sys.argv[1])); body=json.load(open(sys.argv[2]))
+argv=jev["argv"]; jstate=json.loads(jev["stdin"])
+jopts=dict(argv[i+1].split("=",1) for i,a in enumerate(argv) if a=="--option")
+jq=argv[argv.index("--question")+1] if "--question" in argv else argv[1]
+q=body["questions"]["answer"]
+assert body["state"]==jstate, (body["state"], jstate)
+assert q["criteria"]==jopts and list(q["criteria"])==list(jopts), (q["criteria"], jopts)
+assert q["instructions"]==jq and q["type"]=="choice", (q, jq)
+row=json.loads(sys.argv[3])
+if "jev_input" in row or "imajev_input" in row:
+    assert row["jev_input"]==row["imajev_input"]==jstate, row
+' "$STUB_JEV_LOG" "$STUB_IMAJEV_LOG" "$1"
+}
+check "same state, question, options (keys, order, descriptions); jev_input == imajev_input" 'same_decision "$row"' "$row"
+sent=$(cat "$STUB_IMAJEV_LOG")
+check "unknown keys and rule-only flags never reach Imajev" '! grep -qE "SECRET_DIFF|context_bound|strict_scope|opus_failed|\"diff\"" <<<"$sent"' "$sent"
+check "objective truncated to 280 for Imajev as for Jev" 'python3 -c "import json,sys; assert len(json.loads(sys.argv[1])[\"state\"][\"objective\"])==280" "$sent"' "$sent"
+check "interface_change keeps luna_low off Imajev's options too (same floor)" 'python3 -c "import json,sys; assert list(json.loads(sys.argv[1])[\"questions\"][\"answer\"][\"criteria\"])==[\"luna_high\",\"sol_high\"]" "$sent"' "$sent"
+check "the 2 KB state cap is the same for both adapters, and an oversized state never leaves the process" 'python3 -c "
+import sys,os; sys.path.insert(0,\"$S\"); sys.dont_write_bytecode=True
+import jev_route, imajev_route
+assert imajev_route.STATE_MAX_BYTES==jev_route.STATE_MAX_BYTES==2048
+r=imajev_route.classify(\"q\", {\"objective\": \"x\"*3000}, {\"a\":\"A\",\"b\":\"B\"}, 2)
+assert r[\"ok\"] is False and r[\"reason\"]==\"state_too_large\", r
+" && [ "$(grep -c . "$STUB_IMAJEV_MARK")" -eq 1 ]' "$(cat "$STUB_IMAJEV_MARK")"
+reset_jev; reset_imajev; export STUB_CHOICE=luna_max STUB_CONF=0.9; imajev_says '{"choice":"claude_opus_high","conf":0.88}'
+r=$(dual shadow shadow "$NARROW")
+check "after one failure both are offered the same four routes (luna_max eligible)" 'same_decision "$(last_line)" && [ "$(offered)" = "luna_high luna_max sol_high claude_opus_high" ]' "$(offered)"
+check "dual shadow: one decision id carries both answers; the route stays deterministic" '[ "$(field "$r" jev_route)|$(field "$r" imajev_route)|$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" policy_version)" = "luna_max|claude_opus_high|luna_high|legacy|5.5.0" ] && [ "$(grep -c "\"id\":\"$(field "$r" id)\"" "$FABLE_LEDGER")" -eq 1 ]' "$r"
+
+echo "Imajev shadow: failures cost only Imajev's answer"
+reset_jev; export STUB_CHOICE=sol_high STUB_CONF=0.9
+fails() {  # fails <label> <expected reason> [env assignments...]: Imajev fails, Jev is recorded, route unchanged
+  local label=$1 want=$2; shift 2
+  local out; out=$(env "$@" FABLE_JEV_MODE=shadow FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" route <<<"$MIDDLE" 2>"$T/stderr")
+  check "Imajev $label -> fallback $want; Jev recorded; route unchanged" '[ "$(field "$out" imajev_status)|$(field "$out" imajev_reason)|$(field "$out" jev_status)|$(field "$out" jev_route)|$(field "$out" actual_route)|$(field "$out" decided_by)" = "fallback|$want|shadow|sol_high|luna_high|legacy" ]' "$out"
+  last_fail=$out
+}
+reset_imajev; fails "server unavailable" unavailable FABLE_IMAJEV_URL="$DEAD_URL"
+check "unavailable: Imajev read nothing, so no imajev_input; Jev's input kept" '! grep -q imajev_input <<<"$(last_line)" && grep -q "\"jev_input\"" <<<"$(last_line)"' "$(last_line)"
+imajev_says '{"delay":4}'
+t0=$(python3 -c 'import time; print(time.time())')
+fails "timeout" timeout FABLE_IMAJEV_TIMEOUT=1
+t1=$(python3 -c 'import time; print(time.time())')
+check "timeout: the wait is bounded by FABLE_IMAJEV_TIMEOUT" 'python3 -c "import sys; sys.exit(0 if float(sys.argv[2])-float(sys.argv[1]) < 3.5 else 1)" "$t0" "$t1"' "$t0 $t1"
+imajev_says '{"mode":"malformed"}';        fails "malformed JSON" malformed
+imajev_says '{"mode":"notjson_object"}';   fails "a non-object body" malformed
+imajev_says '{"mode":"noanswer"}';         fails "missing answer" missing_answer
+imajev_says '{"mode":"noconf"}';           fails "missing confidence" no_confidence
+imajev_says '{"mode":"http500"}';          fails "HTTP 500" http_500
+imajev_says '{"mode":"http422"}';          fails "HTTP 422 (request refused)" http_422
+imajev_says '{"choice":"gpt_ultra","conf":0.99}'; fails "unknown choice" unknown_choice
+check "unknown choice: the off-list answer stays visible" '[ "$(field "$last_fail" imajev_route)" = gpt_ultra ]' "$last_fail"
+reset_imajev; fails "wrong path" http_404 FABLE_IMAJEV_URL="${IMAJEV_URL%/v1/systemone}/v1/other"
+fails "invalid URL" invalid_url FABLE_IMAJEV_URL="ftp://127.0.0.1/x"
+fails "adapter exception (unparsable URL)" adapter_error FABLE_IMAJEV_URL="http://[::1"
+reset_jev; reset_imajev; imajev_says '{"choice":"sol_high","conf":0.9}'
+r=$(STUB_JEV=malformed dual shadow shadow "$MIDDLE")
+check "Jev fails, Imajev answers: Jev fallback, Imajev recorded, route unchanged" '[ "$(field "$r" jev_status)|$(field "$r" jev_reason)|$(field "$r" imajev_status)|$(field "$r" imajev_route)|$(field "$r" actual_route)" = "fallback|malformed|shadow|sol_high|luna_high" ]' "$r"
+r=$(PATH="$BASE" FABLE_IMAJEV_URL="$DEAD_URL" dual shadow shadow "$MIDDLE")
+check "both fail: deterministic route, as before" '[ "$(field "$r" jev_reason)|$(field "$r" imajev_reason)|$(field "$r" actual_route)|$(field "$r" decided_by)" = "executable_missing|unavailable|luna_high|legacy" ]' "$r"
+
+echo "Imajev shadow: concurrent with Jev"
+reset_jev; reset_imajev; export STUB_CHOICE=luna_high STUB_CONF=0.9; imajev_says '{"delay":1.5,"choice":"sol_high"}'
+t0=$(python3 -c 'import time; print(time.time())')
+r=$(STUB_JEV_DELAY=1.5 dual shadow shadow "$MIDDLE")
+t1=$(python3 -c 'import time; print(time.time())')
+check "Jev 1.5 s + Imajev 1.5 s cost about 1.5 s, not 3 s; both answers logged" 'python3 -c "import sys; sys.exit(0 if float(sys.argv[2])-float(sys.argv[1]) < 2.7 else 1)" "$t0" "$t1" && [ "$(field "$r" jev_route)|$(field "$r" imajev_route)" = "luna_high|sol_high" ]' "$t0 $t1 $r"
+
+echo "Imajev shadow: Jev active behaves exactly as before"
+reset_jev; reset_imajev; export STUB_CHOICE=luna_low STUB_CONF=0.91; imajev_says '{"choice":"sol_high","conf":0.99}'
+a=$(route active "$MIDDLE"); b=$(dual active shadow "$MIDDLE")
+jev_view() {  # everything Jev decides or logs, minus its latency
+  python3 -c 'import json,sys; r=json.loads(sys.argv[1]); keep=("actual_route","decided_by","model","effort","legacy_route","floor","rule")
+print(json.dumps({k: v for k, v in r.items() if (k.startswith("jev_") and k != "jev_latency_ms") or k in keep}, sort_keys=True))' "$1"
+}
+check "active Jev + Imajev shadow: same Jev fields, same adopted route as without Imajev" '[ "$(jev_view "$a")" = "$(jev_view "$b")" ] && [ "$(field "$b" actual_route)|$(field "$b" decided_by)|$(field "$b" imajev_route)" = "luna_low|jev|sol_high" ]' "$a // $b"
+r=$(STUB_CONF=0.5 dual active shadow "$MIDDLE")
+check "active Jev unsure + Imajev confident (0.99): deterministic route, Imajev never adopted" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" jev_reason)|$(field "$r" imajev_would_accept)" = "luna_high|legacy|low_confidence|True" ]' "$r"
+r=$(FABLE_IMAJEV_URL="$DEAD_URL" dual active shadow "$MIDDLE")
+check "active Jev with Imajev down: Jev still adopted" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" imajev_reason)" = "luna_low|jev|unavailable" ]' "$r"
+
+echo "Imajev shadow: review gate"
+reset_jev; reset_imajev; export STUB_CHOICE=self_review STUB_CONF=0.9; imajev_says '{"choice":"opus_review","conf":0.93}'
+review2() { printf '%s' "$3" | FABLE_JEV_MODE=$1 FABLE_IMAJEV_MODE=$2 python3 "$S/fable-route.py" review --id "${4:-}" 2>/dev/null; }
+v=$(review2 shadow shadow '{"file_count":5,"lines_changed":900,"verification_passed":true,"architectural_deadlock":false}')
+check "ambiguous review: both asked the same question/state/options; Imajev's opus_review logged, review unchanged" 'same_decision "$(last_line)" && [ "$(field "$v" review)|$(field "$v" review_decided_by)|$(field "$v" jev_route)|$(field "$v" imajev_route)|$(field "$v" imajev_status)" = "self_review|legacy|self_review|opus_review|shadow" ] && ! grep -q architectural_deadlock "$STUB_IMAJEV_LOG"' "$v"
+check "review options for Imajev are self_review/opus_review only" 'python3 -c "import json,sys; assert list(json.load(open(sys.argv[1]))[\"questions\"][\"answer\"][\"criteria\"])==[\"self_review\",\"opus_review\"]" "$STUB_IMAJEV_LOG"'
+check "review rows log no state for either model (unchanged)" '! grep -qE "\"(jev|imajev)_input\"" <<<"$(last_line)"' "$(last_line)"
+STUB_CHOICE=opus_review STUB_CONF=0.4 v=$(review2 active shadow '{"file_count":5,"lines_changed":900,"verification_passed":true}')
+check "active Jev unsure on review, Imajev sure of opus_review: still self_review" '[ "$(field "$v" review)|$(field "$v" review_decided_by)|$(field "$v" imajev_route)" = "self_review|legacy|opus_review" ]' "$v"
+imajev_says '{"choice":"fable_review","conf":0.99}'
+v=$(review2 off shadow '{"file_count":5,"lines_changed":900,"verification_passed":true}')
+check "Imajev cannot even propose fable_review: unknown_choice" '[ "$(field "$v" imajev_reason)|$(field "$v" review)" = "unknown_choice|self_review" ]' "$v"
+reset_jev; reset_imajev
+v=$(review2 shadow shadow '{"file_count":3,"security_sensitive":true,"verification_passed":true}')
+check "obvious review: both skipped, neither contacted" '[ "$(field "$v" jev_status)|$(field "$v" imajev_status)|$(field "$v" review)" = "skipped|skipped|opus_review" ] && [ ! -e "$STUB_IMAJEV_MARK" ] && [ ! -e "$STUB_JEV_MARK" ]' "$v"
+export STUB_CHOICE=luna_low STUB_CONF=0.91; imajev_says '{"choice":"sol_high"}'
+r=$(dual shadow shadow "$MIDDLE"); id=$(field "$r" id)
+imajev_says '{"choice":"opus_review"}'
+review2 shadow shadow '{"file_count":4,"lines_changed":300,"verification_passed":true}' "$id" >/dev/null
+o=$(python3 "$S/fable-route.py" outcome --id "$id" --outcome success)
+check "outcome carries the decision's imajev_* and the review's as review_imajev_*" '[ "$(field "$o" imajev_route)|$(field "$o" jev_route)|$(field "$o" review_imajev_route)|$(field "$o" review_jev_route)" = "sol_high|luna_low|opus_review|luna_low" ]' "$o"
+
+echo "Imajev shadow: backfill"
+reset_jev; reset_imajev; export STUB_CHOICE=luna_high STUB_CONF=0.9; imajev_says '{"choice":"sol_high","conf":0.95}'
+b=$(FABLE_JEV_MODE=shadow FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" backfill --model gpt-6-luna --effort max --file-count 4 --objective "Tidy helpers" --verification)
+check "backfill: both answers logged beside the observed route; backfilled/decided_by unchanged" '[ "$(field "$b" backfilled)|$(field "$b" decided_by)|$(field "$b" actual_route)|$(field "$b" jev_route)|$(field "$b" imajev_route)" = "True|lane|luna_max|luna_high|sol_high" ] && same_decision "$b"' "$b"
+b=$(FABLE_JEV_MODE=active FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" backfill --model gpt-6-luna --effort high --file-count 4)
+check "backfill under active Jev: both log-only, the lane's route stands" '[ "$(field "$b" jev_status)|$(field "$b" imajev_status)|$(field "$b" actual_route)" = "shadow|shadow|luna_high" ]' "$b"
+b=$(FABLE_JEV_MODE=off FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" backfill --model gpt-6-luna --effort low --file-count 1 --verification)
+check "backfill with Jev off: Imajev alone is logged, no jev_* answer" '[ "$(field "$b" imajev_status)|$(field "$b" actual_route)|$(field "$b" jev_mode)" = "shadow|luna_low|off" ] && ! grep -qE "\"jev_(status|route|input)\"" <<<"$b"' "$b"
+
+echo "Imajev shadow: report"
+H2H="$T/h2h.jsonl"
+{ D='"event":"decision","policy_version":"5.5.0","jev_mode":"shadow","imajev_mode":"shadow","legacy_route":"luna_high","actual_route":"luna_high"'
+  echo "{$D,\"id\":\"h1\",\"jev_status\":\"shadow\",\"jev_route\":\"luna_high\",\"jev_confidence\":0.9,\"jev_latency_ms\":400,\"jev_would_accept\":true,\"jev_input\":{\"file_count\":4,\"multi_component\":true},\"imajev_status\":\"shadow\",\"imajev_route\":\"sol_high\",\"imajev_confidence\":0.85,\"imajev_latency_ms\":100,\"imajev_would_accept\":true,\"imajev_abstained\":false,\"imajev_unknown_probability\":0.02,\"imajev_probabilities\":{\"luna_high\":0.1,\"sol_high\":0.88,\"luna_low\":0.02},\"imajev_input\":{\"file_count\":4,\"multi_component\":true},\"imajev_experiment_tag\":\"mlx-4b-rot4-cal\",\"imajev_model\":\"imajev-4b\"}"
+  echo '{"event":"attempt","id":"h1","policy_version":"5.5.0","lane_status":"ok","duration_s":100,"model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"outcome","id":"h1","policy_version":"5.5.0","actual_route":"luna_high","jev_status":"shadow","jev_route":"luna_high","imajev_status":"shadow","imajev_route":"sol_high","outcome":"success","attempts":1}'
+  echo "{$D,\"id\":\"h2\",\"jev_status\":\"shadow\",\"jev_route\":\"luna_high\",\"jev_confidence\":0.95,\"jev_latency_ms\":300,\"jev_input\":{\"file_count\":2},\"imajev_status\":\"shadow\",\"imajev_route\":\"luna_high\",\"imajev_confidence\":0.95,\"imajev_latency_ms\":200,\"imajev_would_accept\":true,\"imajev_abstained\":false,\"imajev_unknown_probability\":0.01,\"imajev_input\":{\"file_count\":2},\"imajev_experiment_tag\":\"mlx-4b-rot4-cal\"}"
+  echo "{$D,\"id\":\"h3\",\"jev_status\":\"shadow\",\"jev_route\":\"sol_high\",\"jev_confidence\":0.8,\"jev_latency_ms\":600,\"jev_input\":{\"file_count\":2},\"imajev_status\":\"shadow\",\"imajev_reason\":\"abstained\",\"imajev_route\":\"luna_high\",\"imajev_confidence\":0.3,\"imajev_latency_ms\":150,\"imajev_would_accept\":false,\"imajev_abstained\":true,\"imajev_unknown_probability\":0.7,\"imajev_input\":{\"file_count\":2},\"imajev_experiment_tag\":\"mlx-4b-rot1-cal\"}"
+  echo "{$D,\"id\":\"h4\",\"backfilled\":true,\"jev_status\":\"fallback\",\"jev_reason\":\"timeout\",\"imajev_status\":\"shadow\",\"imajev_route\":\"luna_low\",\"imajev_confidence\":0.9,\"imajev_latency_ms\":90,\"imajev_would_accept\":true,\"imajev_abstained\":false}"
+  echo "{$D,\"id\":\"h5\",\"jev_status\":\"shadow\",\"jev_route\":\"luna_high\",\"jev_confidence\":0.9,\"jev_latency_ms\":350,\"imajev_status\":\"fallback\",\"imajev_reason\":\"unavailable\",\"imajev_latency_ms\":2}"
+  echo "{$D,\"id\":\"h6\",\"jev_status\":\"skipped\",\"imajev_status\":\"skipped\"}"
+  echo '{"event":"review","id":"h1","policy_version":"5.5.0","legacy_review":"self_review","review":"self_review","jev_status":"shadow","jev_route":"self_review","imajev_status":"shadow","imajev_route":"opus_review","imajev_confidence":0.9}'
+  echo '{"event":"decision","id":"o1","policy_version":"5.4.0","legacy_route":"luna_high","actual_route":"luna_high","jev_status":"shadow","jev_route":"luna_high","imajev_status":"shadow","imajev_route":"sol_high","imajev_confidence":0.9}'
+} > "$H2H"
+rep=$(python3 "$S/routing-report.py" --ledger "$H2H" --json 2>&1); rc=$?
+check "report reads Imajev rows" '[ $rc -eq 0 ]' "$rep"
+check "the jev block keeps exactly its pre-Imajev keys and numbers" 'python3 -c "
+import json,sys; j=json.loads(sys.argv[1])[\"current_policy\"][\"jev\"]
+assert set(j)=={\"consulted\",\"consulted_on_backfill\",\"skipped_obvious\",\"status\",\"fallback_reasons\",\"jev_recommendation_distribution\",\"agreement_with_legacy\",\"disagreements\",\"would_accept_in_active\",\"avg_latency_ms\",\"recommendation_by_input\"}, set(j)
+assert j[\"consulted\"]==5 and j[\"skipped_obvious\"]==1 and j[\"fallback_reasons\"]=={\"timeout\":1}, j
+" "$rep"' "$rep"
+check "imajev block: consulted, responses, fallbacks, distribution, agreement, confidence, latency, abstain, unknown, buckets" 'python3 -c "
+import json,sys; i=json.loads(sys.argv[1])[\"current_policy\"][\"imajev\"]
+assert i[\"consulted\"]==5 and i[\"successful_responses\"]==4 and i[\"skipped_obvious\"]==1 and i[\"consulted_on_backfill\"]==1, i
+assert i[\"fallback_reasons\"]=={\"unavailable\":1} and i[\"shadow_reasons\"]=={\"abstained\":1}, i
+assert i[\"imajev_recommendation_distribution\"]=={\"sol_high\":1,\"luna_high\":2,\"luna_low\":1}, i
+assert i[\"agreement_with_legacy\"]==0.5 and i[\"would_accept_in_active\"]==0.75 and i[\"abstain_rate\"]==0.25, i
+assert i[\"avg_latency_ms\"]==135.0 and i[\"avg_confidence\"]==0.75 and i[\"avg_unknown_probability\"]==0.24, i
+assert i[\"avg_top2_margin\"]==0.78 and sum(b[\"n\"] for b in i[\"confidence_buckets\"])==4, i
+assert i[\"recommendation_by_input\"][\"multi_component\"][\"true\"]=={\"sol_high\":1}, i
+assert set(i[\"by_experiment_tag\"])=={\"mlx-4b-rot4-cal\",\"mlx-4b-rot1-cal\",\"(untagged)\"} and i[\"by_experiment_tag\"][\"mlx-4b-rot4-cal\"][\"agreement_with_jev\"]==0.5, i
+assert i[\"shadow_disagreement_lanes\"][\"imajev=sol_high ran=luna_high\"][\"first_try_ok\"]==1.0, i
+assert i[\"shadow_disagreement_outcomes\"][\"imajev=sol_high ran=luna_high\"][\"success_rate\"]==1.0, i
+" "$rep"' "$rep"
+check "head-to-head: both consulted/answered, agreement, pairs, latency, confidence, abstain, one-sided answers" 'python3 -c "
+import json,sys; c=json.loads(sys.argv[1])[\"current_policy\"][\"decision_model_comparison\"]
+assert c[\"both_consulted\"]==5 and c[\"both_answered\"]==3 and c[\"same_recommendation\"]==1 and c[\"different_recommendation\"]==2, c
+assert c[\"agreement_rate\"]==0.333 and c[\"route_pairs\"]=={\"jev=luna_high imajev=sol_high\":1,\"jev=luna_high imajev=luna_high\":1,\"jev=sol_high imajev=luna_high\":1}, c
+assert c[\"avg_latency_ms\"]=={\"jev\":433.33,\"imajev\":150.0} and c[\"avg_confidence\"]=={\"jev\":0.88,\"imajev\":0.7}, c
+assert c[\"imajev_abstain_rate\"]==0.333 and c[\"only_jev_answered\"]==1 and c[\"only_imajev_answered\"]==1, c
+assert c[\"agreement_by_input\"][\"file_count\"][\"2-3\"]=={\"n\":2,\"agreement_rate\":0.5}, c
+assert c[\"disagreement_evidence\"][\"jev=luna_high imajev=sol_high ran=luna_high\"]=={\"n\":1,\"lane_first_try_ok\":1.0,\"outcome_success_rate\":1.0}, c
+assert \"ran=\" in c[\"note\"]
+" "$rep"' "$rep"
+check "no accuracy is claimed for either model anywhere in the report" '! grep -qi accuracy <<<"$rep"'
+check "Imajev data is segmented by policy version like everything else" 'python3 -c "
+import json,sys; d=json.loads(sys.argv[1])
+assert d[\"by_policy_version\"][\"5.4.0\"][\"imajev\"][\"consulted\"]==1 and d[\"current_policy\"][\"imajev\"][\"consulted\"]==5
+assert d[\"by_policy_version\"][\"5.4.0\"][\"decision_model_comparison\"][\"both_answered\"]==1
+" "$rep"' "$rep"
+check "review: Imajev recommendations and Jev-vs-Imajev on review decisions" 'python3 -c "
+import json,sys; v=json.loads(sys.argv[1])[\"current_policy\"][\"review\"]
+assert v[\"imajev_recommendation_distribution\"]=={\"opus_review\":1} and v[\"imajev_disagreements\"]=={\"self_review->opus_review\":1}, v
+assert v[\"model_comparison\"][\"both_answered\"]==1 and v[\"model_comparison\"][\"agreement_rate\"]==0.0, v
+assert v[\"jev_recommendation_distribution\"]=={\"self_review\":1}, v
+" "$rep"' "$rep"
+rep=$(python3 "$S/routing-report.py" --ledger "$MIX" --json)
+check "a ledger with no Imajev rows reports an empty imajev block" 'python3 -c "
+import json,sys; c=json.loads(sys.argv[1])[\"current_policy\"]
+assert c[\"imajev\"][\"consulted\"]==0 and c[\"decision_model_comparison\"][\"both_consulted\"]==0, c[\"imajev\"]
+" "$rep"' "$rep"
+txt=$(python3 "$S/routing-report.py" --ledger "$H2H"); rc=$?
+check "text report renders imajev and decision_model_comparison" '[ $rc -eq 0 ] && grep -q "^  imajev:" <<<"$txt" && grep -q "^  decision_model_comparison:" <<<"$txt"' "$txt"
+rep=$(python3 "$S/routing-report.py" --json)
+check "the live ledger's report (this suite's rows) joins Imajev answers" 'python3 -c "
+import json,sys; c=json.loads(sys.argv[1])[\"current_policy\"]
+assert c[\"imajev\"][\"successful_responses\"]>=5 and c[\"decision_model_comparison\"][\"both_answered\"]>=3, c[\"imajev\"]
+" "$rep"' "$rep"
+unset FABLE_IMAJEV_URL; reset_jev; reset_imajev
+
 echo "Codex lane"
 PATH="$CODEXBIN:$BASE"
 export STUB_ARGV_DIR="$T/argv"; mkdir -p "$STUB_ARGV_DIR"
@@ -566,6 +831,12 @@ out=$(STUB_JEV=sleep FABLE_JEV_TIMEOUT=1 "$S/codex-lane.sh" --spec "$T/spec-bf2"
 d=$(dec "$(field "$(last_attempt)" id)")
 check "a failing Jev only costs its answer: fallback logged, lane runs" '[ $rc -eq 0 ] && [ "$(field "$d" jev_status)" = fallback ] && [ "$(field "$d" task)" = "tidy the helpers." ]' "$d"
 check "no verification line: floor stays luna_high" '[ "$(field "$d" floor)" = luna_high ]' "$d"
+discard "$out"
+reset_jev; reset_imajev; imajev_says '{"choice":"sol_high","conf":0.93}'; rm -f "$STUB_ARGV_DIR"/*
+out=$(STUB_CHOICE=luna_high STUB_CONF=0.9 FABLE_IMAJEV_MODE=shadow FABLE_IMAJEV_URL="$IMAJEV_URL" FABLE_IMAJEV_EXPERIMENT_TAG=lane-test \
+      "$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" 2>/dev/null); rc=$?
+d=$(dec "$(field "$(last_attempt)" id)")
+check "unrouted lane + Imajev shadow: both answers on the backfilled decision, same input, the lane's model unchanged" '[ $rc -eq 0 ] && [ "$(field "$d" backfilled)|$(field "$d" decided_by)|$(field "$d" actual_route)|$(field "$d" jev_route)|$(field "$d" imajev_route)|$(field "$d" imajev_experiment_tag)" = "True|lane|luna_high|luna_high|sol_high|lane-test" ] && same_decision "$d" && argv_has gpt-6-luna && ! argv_has gpt-6-sol' "$d"
 discard "$out"
 rep=$(python3 "$S/routing-report.py" --json)
 check "report: backfills counted, unrouted runs not counted as routed, shadow evidence joins" 'python3 -c "

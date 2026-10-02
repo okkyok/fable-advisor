@@ -2,8 +2,9 @@
 """Stub for both `semdecide` and `jev` (jev-cli), selected by argv[0].
 
 STUB_JEV: ok (default) | malformed | noconf | sleep | exit:<n>
-STUB_CHOICE / STUB_CONF set the answer. Every call touches STUB_JEV_MARK and
-saves its stdin (the decision state) and argv to STUB_JEV_LOG.
+STUB_CHOICE / STUB_CONF set the answer; STUB_JEV_DELAY (seconds) delays it.
+Every call touches STUB_JEV_MARK and saves its stdin (the decision state) and
+argv to STUB_JEV_LOG.
 """
 import json, os, sys, time
 name = os.path.basename(sys.argv[0])
@@ -18,6 +19,7 @@ if mode.startswith("exit:"):
     sys.exit(int(mode[5:]))
 if mode == "sleep":
     time.sleep(30)
+time.sleep(float(os.environ.get("STUB_JEV_DELAY", "0")))
 if mode == "malformed":
     print("this is not json")
     sys.exit(0)

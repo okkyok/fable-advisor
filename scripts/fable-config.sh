@@ -37,6 +37,19 @@
 : "${FABLE_JEV_TIMEOUT:=8}"                    # seconds; a slower Jev is a fallback, not a wait
 : "${FABLE_JEV_BACKEND:=auto}"                 # auto | semdecide | jev-cli
 
+# --- Imajev-4B shadow comparison (optional; removable; measurement only) -------
+# Asks a local Imajev server the same question, with the same state and options,
+# at exactly the decisions where Jev is asked, and logs imajev_* beside jev_*.
+# There is no active mode: Imajev never changes a route or a review. Off by
+# default, so an update never starts connecting to a local server on its own.
+: "${FABLE_IMAJEV_MODE:=off}"                  # off | shadow (anything else is off)
+: "${FABLE_IMAJEV_URL:=http://127.0.0.1:8765/v1/systemone}"
+: "${FABLE_IMAJEV_TIMEOUT:=8}"                 # seconds; same budget as Jev's
+: "${FABLE_IMAJEV_MIN_CONFIDENCE:=0.80}"       # only decides imajev_would_accept
+: "${FABLE_IMAJEV_EXPERIMENT_TAG:=}"           # free text logged on each row, e.g. mlx-4b-rot4-cal
+
 export FABLE_CODEX_DEFAULT_MODEL FABLE_CODEX_DEFAULT_EFFORT FABLE_CODEX_STRONG_MODEL \
        FABLE_SENIOR_MODEL FABLE_FRONTIER_MODEL \
-       FABLE_LEDGER FABLE_JEV_MODE FABLE_JEV_MIN_CONFIDENCE FABLE_JEV_TIMEOUT FABLE_JEV_BACKEND
+       FABLE_LEDGER FABLE_JEV_MODE FABLE_JEV_MIN_CONFIDENCE FABLE_JEV_TIMEOUT FABLE_JEV_BACKEND \
+       FABLE_IMAJEV_MODE FABLE_IMAJEV_URL FABLE_IMAJEV_TIMEOUT FABLE_IMAJEV_MIN_CONFIDENCE \
+       FABLE_IMAJEV_EXPERIMENT_TAG

@@ -17,6 +17,12 @@ even if it ran after the upgrade), else to its own field. The headline is
 `historical_all` mixes them and must not be used to judge Jev or a route,
 because route names, the deterministic baseline and Jev's options all changed
 between policies. Nothing in the ledger is rewritten.
+
+Imajev shadow rows (imajev_*) get an `imajev` block shaped like `jev`, and
+`decision_model_comparison` sets the two side by side on the decisions both
+were asked about. In shadow only actual_route ran, so neither model has a
+ground truth: the report shows agreement, confidence, latency, abstention and
+what the route that ran did — never an "accuracy" for either model.
 """
 from __future__ import annotations
 
@@ -122,12 +128,12 @@ def verifies(runs):
 INPUT_BREAKDOWN = ("prior_failures", "file_count", "multi_component", "interface_change")
 
 
-def input_value(row, key):
+def input_value(row, key, field="jev_input"):
     """One field of the state Jev was sent, as a report bucket; None if the row has no jev_input.
 
     "absent" means the caller never stated it — Jev saw no value, not false.
     """
-    state = row.get("jev_input")
+    state = row.get(field)
     if not isinstance(state, dict):
         return None
     value = state.get(key)
@@ -316,7 +322,199 @@ def section(rows):
         "avg_findings": mean([o.get("review_findings") for o in v]),
         "task_success_rate": rate(sum(1 for o in v if o.get("outcome") == "success"), len(v))}
         for k, v in sorted(by_reviewer.items())}
+
+    out["imajev"] = imajev_section(decisions, outcomes, attempts)
+    out["decision_model_comparison"] = comparison(decisions, outcomes, attempts, "legacy_route")
+    review_imajev = [r for r in reviews if imajev_answered(r)]
+    out["review"].update(
+        imajev_consulted=sum(1 for r in reviews if consulted(r, "imajev")),
+        imajev_recommendation_distribution=tally(r["imajev_route"] for r in review_imajev),
+        imajev_disagreements=tally("%s->%s" % (r.get("legacy_review"), r["imajev_route"])
+                                   for r in review_imajev if r["imajev_route"] != r.get("legacy_review")),
+        imajev_fallback_reasons=tally(r.get("imajev_reason") for r in reviews
+                                      if r.get("imajev_status") == "fallback"),
+        imajev_abstain_rate=rate(sum(1 for r in review_imajev if r.get("imajev_abstained") is True),
+                                 len(review_imajev)),
+        model_comparison=comparison(reviews, {}, {}, "legacy_review", breakdown=False))
     return out
+
+
+# --- Imajev shadow, and Jev vs Imajev on the same decisions ------------------------
+
+def consulted(row, model):
+    return row.get(model + "_status") not in (None, "skipped")
+
+
+def jev_answered(row):
+    """Jev returned an on-list route (an off-list answer is a fallback, not a recommendation)."""
+    return bool(text(row.get("jev_route"))) and row.get("jev_reason") != "unknown_choice"
+
+
+def imajev_answered(row):
+    """Imajev returned an on-list route; an abstention still names its top choice."""
+    return row.get("imajev_status") == "shadow" and bool(text(row.get("imajev_route"))) \
+        and row.get("imajev_reason") != "unknown_choice"
+
+
+def imajev_section(decisions, outcomes, attempts):
+    """The `jev` block's measurements for Imajev, plus what only Imajev reports."""
+    asked = [r for r in decisions if imajev_answered(r)]
+    agree = sum(1 for r in asked if r["imajev_route"] == r.get("legacy_route"))
+    out = {
+        "consulted": sum(1 for r in decisions if consulted(r, "imajev")),
+        "consulted_on_backfill": sum(1 for r in decisions if r.get("backfilled") is True and consulted(r, "imajev")),
+        "skipped_obvious": sum(1 for r in decisions if r.get("imajev_status") == "skipped"),
+        "successful_responses": len(asked),
+        "status": tally(r.get("imajev_status") for r in decisions if r.get("imajev_status")),
+        # Only failures: abstained / low_confidence are answers, counted below.
+        "fallback_reasons": tally(r.get("imajev_reason") for r in decisions if r.get("imajev_status") == "fallback"),
+        "shadow_reasons": tally(r.get("imajev_reason") for r in asked if r.get("imajev_reason")),
+        "imajev_recommendation_distribution": tally(r["imajev_route"] for r in asked),
+        "agreement_with_legacy": rate(agree, len(asked)),
+        "disagreements": tally("%s->%s" % (r.get("legacy_route"), r["imajev_route"])
+                               for r in asked if r["imajev_route"] != r.get("legacy_route")),
+        "would_accept_in_active": rate(sum(1 for r in asked if r.get("imajev_would_accept") is True), len(asked)),
+        "avg_confidence": mean([r.get("imajev_confidence") for r in asked]),
+        "avg_latency_ms": mean([r.get("imajev_latency_ms") for r in asked]),
+        "p90_latency_ms": pct([r.get("imajev_latency_ms") for r in asked], 90),
+        "avg_server_ms": mean([r.get("imajev_server_ms") for r in asked]),
+        "abstain_rate": rate(sum(1 for r in asked if r.get("imajev_abstained") is True), len(asked)),
+        "avg_unknown_probability": mean([r.get("imajev_unknown_probability") for r in asked]),
+        # Second-best margin: how close the runner-up option was (from imajev_probabilities).
+        "avg_top2_margin": mean([margin(r.get("imajev_probabilities")) for r in asked]),
+        "models": tally(r["imajev_model"] for r in asked if text(r.get("imajev_model"))),
+        "recommendation_by_input": {key: {value: tally(r["imajev_route"] for r in asked
+                                                       if input_value(r, key, "imajev_input") == value)
+                                          for value in sorted({input_value(r, key, "imajev_input") for r in asked
+                                                               if isinstance(r.get("imajev_input"), dict)})}
+                                    for key in INPUT_BREAKDOWN},
+    }
+    buckets = []
+    for low, high in BUCKETS:
+        inside = [r for r in asked if num(r.get("imajev_confidence")) is not None
+                  and low <= r["imajev_confidence"] < high]
+        done = [outcomes[r["id"]] for r in inside if text(r.get("id")) in outcomes]
+        matched = [o for o in done if o.get("actual_route") == o.get("imajev_route")]
+        buckets.append({"confidence": "%.1f-%.1f" % (low, min(high, 1.0)), "n": len(inside),
+                        "agree_legacy": rate(sum(1 for r in inside if r["imajev_route"] == r.get("legacy_route")), len(inside)),
+                        "abstained": sum(1 for r in inside if r.get("imajev_abstained") is True),
+                        "success_rate": rate(sum(1 for o in done if o.get("outcome") == "success"), len(done)),
+                        "success_when_actual_matched": rate(sum(1 for o in matched if o.get("outcome") == "success"), len(matched))})
+    out["confidence_buckets"] = buckets
+    # Counterfactual evidence, as for Jev: when Imajev wanted another route, how
+    # did the route that actually ran do?
+    shadow_lane, would_accept = defaultdict(list), Counter()
+    for d in asked:
+        runs = attempts.get(text(d.get("id")) or "")
+        if runs and d["imajev_route"] != d.get("actual_route"):
+            key = "imajev=%s ran=%s" % (d["imajev_route"], d.get("actual_route"))
+            shadow_lane[key].append(runs)
+            would_accept[key] += d.get("imajev_would_accept") is True
+    out["shadow_disagreement_lanes"] = {k: dict(lane_stats(v), would_accept_in_active=would_accept[k])
+                                        for k, v in sorted(shadow_lane.items())}
+    shadow = defaultdict(list)
+    for d in asked:
+        o = outcomes.get(text(d.get("id")) or "")
+        if o and d["imajev_route"] != o.get("actual_route"):
+            shadow["imajev=%s ran=%s" % (d["imajev_route"], o.get("actual_route"))].append(o)
+    out["shadow_disagreement_outcomes"] = {k: outcome_stats(v) for k, v in sorted(shadow.items())}
+    # Experiment tags (rotations, calibration, backend...) must not be pooled blindly.
+    tags = defaultdict(list)
+    for r in decisions:
+        if consulted(r, "imajev"):
+            tags[text(r.get("imajev_experiment_tag")) or "(untagged)"].append(r)
+    out["by_experiment_tag"] = {tag: {
+        "consulted": len(rows),
+        "successful_responses": sum(1 for r in rows if imajev_answered(r)),
+        "agreement_with_legacy": rate(sum(1 for r in rows if imajev_answered(r) and r["imajev_route"] == r.get("legacy_route")),
+                                      sum(1 for r in rows if imajev_answered(r))),
+        "agreement_with_jev": rate(sum(1 for r in rows if imajev_answered(r) and jev_answered(r)
+                                       and r["imajev_route"] == r["jev_route"]),
+                                   sum(1 for r in rows if imajev_answered(r) and jev_answered(r))),
+        "avg_confidence": mean([r.get("imajev_confidence") for r in rows if imajev_answered(r)]),
+        "avg_latency_ms": mean([r.get("imajev_latency_ms") for r in rows if imajev_answered(r)]),
+        "abstain_rate": rate(sum(1 for r in rows if imajev_answered(r) and r.get("imajev_abstained") is True),
+                             sum(1 for r in rows if imajev_answered(r)))} for tag, rows in sorted(tags.items())}
+    return out
+
+
+def margin(probabilities):
+    if not isinstance(probabilities, dict):
+        return None
+    values = sorted((v for v in (num(p) for p in probabilities.values()) if v is not None), reverse=True)
+    return round(values[0] - values[1], 4) if len(values) >= 2 else None
+
+
+def comparison(rows, outcomes, attempts, legacy_key, breakdown=True):
+    """Jev and Imajev on the decisions both answered: agreement, never accuracy.
+
+    Only actual_route ran. A success says the route that ran worked, not that a
+    model recommending another route was wrong — that route might have worked
+    too. So outcomes appear only per (jev, imajev, ran) triple, as evidence.
+    """
+    both = [r for r in rows if consulted(r, "jev") and consulted(r, "imajev")]
+    pairs = [r for r in both if jev_answered(r) and imajev_answered(r)]
+    same = [r for r in pairs if r["jev_route"] == r["imajev_route"]]
+    out = {
+        "both_consulted": len(both),
+        "both_answered": len(pairs),
+        "same_recommendation": len(same),
+        "different_recommendation": len(pairs) - len(same),
+        "agreement_rate": rate(len(same), len(pairs)),
+        "route_pairs": tally("jev=%s imajev=%s" % (r["jev_route"], r["imajev_route"]) for r in pairs),
+        "agreement_with_legacy": {
+            "jev": rate(sum(1 for r in pairs if r["jev_route"] == r.get(legacy_key)), len(pairs)),
+            "imajev": rate(sum(1 for r in pairs if r["imajev_route"] == r.get(legacy_key)), len(pairs))},
+        "avg_latency_ms": {"jev": mean([r.get("jev_latency_ms") for r in pairs]),
+                           "imajev": mean([r.get("imajev_latency_ms") for r in pairs])},
+        "p90_latency_ms": {"jev": pct([r.get("jev_latency_ms") for r in pairs], 90),
+                           "imajev": pct([r.get("imajev_latency_ms") for r in pairs], 90)},
+        "avg_confidence": {"jev": mean([r.get("jev_confidence") for r in pairs]),
+                           "imajev": mean([r.get("imajev_confidence") for r in pairs])},
+        "would_accept_in_active": {
+            "jev": rate(sum(1 for r in pairs if r.get("jev_would_accept") is True), len(pairs)),
+            "imajev": rate(sum(1 for r in pairs if r.get("imajev_would_accept") is True), len(pairs))},
+        "imajev_abstain_rate": rate(sum(1 for r in pairs if r.get("imajev_abstained") is True), len(pairs)),
+        "imajev_avg_unknown_probability": mean([r.get("imajev_unknown_probability") for r in pairs]),
+        # Only one model answered: the other fell back (timeout, unavailable, ...).
+        "only_jev_answered": sum(1 for r in both if jev_answered(r) and not imajev_answered(r)),
+        "only_imajev_answered": sum(1 for r in both if imajev_answered(r) and not jev_answered(r)),
+    }
+    if not breakdown:
+        return out
+    # The same split as recommendation_by_input; both models were sent this state.
+    out["agreement_by_input"] = {key: {value: {"n": len(group), "agreement_rate": rate(
+        sum(1 for r in group if r["jev_route"] == r["imajev_route"]), len(group))}
+        for value, group in sorted(grouped(pairs, key).items())} for key in INPUT_BREAKDOWN}
+    evidence = defaultdict(list)
+    for r in pairs:
+        if r["jev_route"] != r["imajev_route"]:
+            evidence["jev=%s imajev=%s ran=%s" % (r["jev_route"], r["imajev_route"], r.get("actual_route"))].append(r)
+    def runs(r):
+        return attempts.get(text(r.get("id")) or "")
+
+    def outcome(r):
+        return outcomes.get(text(r.get("id")) or "")
+
+    out["disagreement_evidence"] = {key: {
+        "n": len(group),
+        "lane_first_try_ok": rate(sum(1 for r in group if runs(r) and runs(r)[0].get("lane_status") == "ok"),
+                                  sum(1 for r in group if runs(r))),
+        "outcome_success_rate": rate(sum(1 for r in group if outcome(r) and outcome(r).get("outcome") == "success"),
+                                     sum(1 for r in group if outcome(r)))}
+        for key, group in sorted(evidence.items())}
+    out["note"] = ("shadow: only `ran=` executed; outcomes are evidence about that route, "
+                   "not ground truth for either recommendation")
+    return out
+
+
+def grouped(rows, key):
+    groups = defaultdict(list)
+    for r in rows:
+        value = input_value(r, key) or input_value(r, key, "imajev_input")
+        if value is not None:
+            groups[value].append(r)
+    return groups
 
 
 def policy_of(row, decision_policy):
