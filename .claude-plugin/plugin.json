@@ -1,6 +1,6 @@
 {
   "name": "fable-advisor",
-  "version": "5.5.2",
+  "version": "5.6.0",
   "description": "A thin control plane for delegation in Claude Code: implementation goes to a Codex lane by default (a different model family, in a disposable git worktree) because Claude quota is the scarce resource, and stays Claude-side only for one of five named reasons, then on a senior Opus worker. Fable reframes stuck problems and takes exceptional reviews; it never implements. A deterministic router (policy as code, versioned ledger) makes every routing and review decision, with optional Jev adaptive routing (off|shadow|active, shadow by default) behind a confidence gate. The harness runs acceptance itself, lands only what the scope allows and never over newer main-tree work, and a report compares routes, models and efforts per policy version.",
   "author": {
     "name": "Dan McAteer",
