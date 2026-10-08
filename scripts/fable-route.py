@@ -47,7 +47,7 @@ import threading
 import time
 import uuid
 
-POLICY_VERSION = "5.5.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
+POLICY_VERSION = "5.6.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENTS_DIR = os.path.join(os.path.dirname(HERE), "agents")
 sys.dont_write_bytecode = True  # importing jev_route must not litter the plugin directory
@@ -395,13 +395,13 @@ def route_refusal(route, s, floor):
 def jev_route_options(s, floor):
     """The routes Jev may pick from in the ambiguous middle.
 
-    First attempts: luna_high / sol_high (and luna_low when the floor allows) —
-    Jev never sends a first attempt to Claude. After one failure: luna_high,
-    sol_high, claude_opus_high, and luna_max when eligible. Two failures never
-    reach Jev (hard rule), and Fable is never an option.
+    First attempts: luna_high (and luna_low when the floor allows). After one
+    failure: luna_high, sol_high, claude_opus_high, and luna_max when eligible.
+    Two failures never reach Jev (hard rule), and Fable is never an option.
     """
     return {k: v for k, v in ROUTE_OPTIONS.items()
             if route_refusal(k, s, floor) is None
+            and not (k == "sol_high" and failures(s) < 1)
             and not (k == "claude_opus_high" and failures(s) < 1)}
 
 
@@ -619,7 +619,7 @@ def emit(record):
 # --- commands -------------------------------------------------------------------------
 
 def skip(record, mode, imode):
-    """An obvious case: rules decide it, and neither model is asked."""
+    """Mark the decision when neither model is asked."""
     if mode != "off":
         record["jev_status"] = "skipped"
     if imode != "off":
@@ -659,14 +659,18 @@ def cmd_route(args, text):
             skip(record, mode, imode)
         else:
             options = jev_route_options(state, floor)
-            jev_state = {k: v for k, v in state.items() if k not in ROUTE_RULE_ONLY}
-            fields, choice = consult(mode, imode, ROUTE_QUESTION, jev_state, options)
-            record.update(fields)
-            log_inputs(record, fields, jev_state, mode, imode)
-            # consult_jev only accepts a choice from `options`; the refusal check
-            # is repeated so no future option list can smuggle past the floor.
-            if choice is not None and route_refusal(choice, state, floor) is None:
-                actual, decided_by = choice, "jev"
+            if len(options) <= 1:
+                skip(record, mode, imode)
+                record["skip_reason"] = "single_option"
+            else:
+                jev_state = {k: v for k, v in state.items() if k not in ROUTE_RULE_ONLY}
+                fields, choice = consult(mode, imode, ROUTE_QUESTION, jev_state, options)
+                record.update(fields)
+                log_inputs(record, fields, jev_state, mode, imode)
+                # consult_jev only accepts a choice from `options`; the refusal check
+                # is repeated so no future option list can smuggle past the floor.
+                if choice is not None and route_refusal(choice, state, floor) is None:
+                    actual, decided_by = choice, "jev"
 
     lane = lane_for(actual)
     risks = high_risk(state)
@@ -741,9 +745,13 @@ def cmd_backfill(args):
             skip(record, mode, imode)
         else:
             options = jev_route_options(state, record["floor"])
-            fields, _ = consult("shadow" if mode != "off" else "off", imode, ROUTE_QUESTION, state, options)
-            record.update(fields)
-            log_inputs(record, fields, state, mode, imode)
+            if len(options) <= 1:
+                skip(record, mode, imode)
+                record["skip_reason"] = "single_option"
+            else:
+                fields, _ = consult("shadow" if mode != "off" else "off", imode, ROUTE_QUESTION, state, options)
+                record.update(fields)
+                log_inputs(record, fields, state, mode, imode)
     record.update(actual_route=actual, decided_by="lane", lane="codex-implementer",
                   model=args.model, effort=args.effort)
     append(record)

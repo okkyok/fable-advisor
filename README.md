@@ -99,8 +99,11 @@ drops every other key. Rules still own the obvious cases — Jev is not called f
 them — and the high-risk rules (security, data migration, schema, public API,
 concurrency, irreversible, two failures) cannot be overridden by any Jev answer.
 Jev only ever sees the routes the task is eligible for: a first attempt is
-offered `luna_low`/`luna_high`/`sol_high`, a first retry adds `luna_max` (when
-eligible) and `claude_opus_high`, and Fable is never an option. In review
+offered `luna_low`/`luna_high` when the floor allows both, or just
+`luna_high` when the floor requires it. After one failure, options include
+`sol_high`, `claude_opus_high`, and `luna_max` when eligible. Fable is never an
+option. When only one route remains, Jev and Imajev are skipped and the ledger
+records `skip_reason: single_option`. In review
 gating Jev can only escalate (`self_review` → `opus_review`); `none` and
 `fable_review` are rule outcomes, never Jev answers.
 
@@ -247,8 +250,8 @@ Row fields (absent when `FABLE_IMAJEV_MODE=off`; `None` values are not written):
   `jev=… imajev=… ran=…`. `review.model_comparison` is the same for reviews.
 
 **No accuracy.** In shadow only `actual_route` ran. If Luna High succeeded
-while Jev said `luna_high` and Imajev said `sol_high`, Sol might have succeeded
-too, so the report never scores either model as right or wrong. It shows
+while Jev said `luna_high` and Imajev said `luna_low`, another route might have
+succeeded too, so the report never scores either model as right or wrong. It shows
 agreement, confidence, latency and abstention, and keeps what the route that
 ran did (`ran=`) as evidence, separate from the recommendations.
 
@@ -337,6 +340,18 @@ Review in proportion to blast radius — Opus for risk, Fable only when the
 review itself is contested — and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
+
+## 5.6.0
+
+**Sol is an escalation after a failure.** Jev and Imajev no longer receive
+`sol_high` on first attempts; explicit caller `--route sol_high` remains
+available. Shadow data (75 Jev classifications, 2026-09-28 through 2026-10-08)
+showed Jev recommending `sol_high` on 71% of first attempts, while `luna_high`
+succeeded on 38 of the 39 such tasks without a Codex-quota failover. This
+included every `multi_component` task and every task touching at least eight
+files. First-attempt cases with one eligible route now skip both classifiers
+and record `skip_reason: single_option`. `routing-report.py` separates 5.6.0
+rows from 5.5.x by policy version so before/after results can be compared.
 
 ## 5.5.2
 
