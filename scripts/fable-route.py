@@ -47,7 +47,7 @@ import threading
 import time
 import uuid
 
-POLICY_VERSION = "5.6.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
+POLICY_VERSION = "5.7.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENTS_DIR = os.path.join(os.path.dirname(HERE), "agents")
 sys.dont_write_bytecode = True  # importing jev_route must not litter the plugin directory
@@ -259,7 +259,8 @@ def lane_for(route):
                       "effort": os.environ["FABLE_CODEX_DEFAULT_EFFORT"]},
         "luna_max": {"lane": "codex-implementer", "role": "deep_worker", "model": model, "effort": "max"},
         "sol_high": {"lane": "codex-implementer", "role": "broad_worker",
-                     "model": os.environ["FABLE_CODEX_STRONG_MODEL"], "effort": "high"},
+                     "model": os.environ["FABLE_CODEX_STRONG_MODEL"],
+                     "effort": os.environ["FABLE_CODEX_STRONG_EFFORT"]},
         # The model is passed on the spawn (it outranks frontmatter); the effort
         # can only come from the agent file's pin, so it is read from there.
         "claude_opus_high": {"lane": "implementer", "role": "senior_worker",
@@ -700,13 +701,13 @@ def observed_route(model, effort):
     """The route a lane's own model/effort amounts to, or "unmapped".
 
     Exact matches only. A model/effort pair no route runs (Luna at medium or
-    xhigh, Sol at anything but high, another model) is "unmapped" rather than
+    xhigh, Sol at anything but its configured effort, another model) is "unmapped" rather than
     the nearest route: folding xhigh into luna_high would contaminate exactly
     the high-vs-max comparison the ledger exists for. The record keeps the
     real model and effort either way.
     """
     if model == os.environ["FABLE_CODEX_STRONG_MODEL"]:
-        return "sol_high" if effort == "high" else "unmapped"
+        return "sol_high" if effort == os.environ["FABLE_CODEX_STRONG_EFFORT"] else "unmapped"
     if model == os.environ["FABLE_CODEX_DEFAULT_MODEL"]:
         if effort == "low":
             return "luna_low"
