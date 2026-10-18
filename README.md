@@ -74,7 +74,7 @@ luna_low ──► luna_high ──┬──► luna_max  (narrow, failed once, 
 | `luna_low` | codex, `gpt-6-luna`, effort `low` | Mechanical, one file, runnable verification, no risk flag. |
 | `luna_high` | codex, `gpt-6-luna`, effort `high` | Ordinary implementation — the default, first attempt and first retry. |
 | `luna_max` | codex, `gpt-6-luna`, effort `max` | A narrow retry: failed once, runnable verification, ≤ 3 files, not multi-component, no interface change, no risk flag. Never a first attempt. |
-| `sol_high` | codex, `gpt-6-sol`, effort `high` | Breadth: several interacting components, integration, interface-heavy work, wide-search debugging. |
+| `sol_high` | codex, `gpt-6.1-sol`, effort `medium` (`FABLE_CODEX_STRONG_EFFORT`) | Breadth: several interacting components, integration, interface-heavy work, wide-search debugging. |
 | `claude_opus_high` | `implementer`, `model: opus` (Opus 5.5), effort `high` | Two failed attempts, or judgment a spec cannot carry. Not "hard code". |
 | `self` | the orchestrator | Context-bound, or below the spawn floor. |
 
@@ -118,7 +118,8 @@ all as environment variables:
 | `FABLE_JEV_BACKEND` | `auto` | `semdecide` \| `jev-cli`; `auto` prefers semdecide |
 | `FABLE_CODEX_DEFAULT_MODEL` | `gpt-6-luna` | the codex default; change models here, not in scripts |
 | `FABLE_CODEX_DEFAULT_EFFORT` | `high` | the `luna_high` effort; keep it `high` (`luna_low` and `luna_max` fix their own) |
-| `FABLE_CODEX_STRONG_MODEL` | `gpt-6-sol` | the `sol_high` model |
+| `FABLE_CODEX_STRONG_MODEL` | `gpt-6.1-sol` | the `sol_high` model |
+| `FABLE_CODEX_STRONG_EFFORT` | `medium` | the `sol_high` effort |
 | `FABLE_SENIOR_MODEL` | `opus` | the senior worker (`claude_opus_high`) and senior reviewer (`opus_review`), passed as the spawn's `model` |
 | `FABLE_FRONTIER_MODEL` | `fable` | the frontier advisor (`consult_first`, `fable_review`) |
 | `FABLE_LEDGER` | `~/.claude/fable-advisor/routing.jsonl` | `off` disables the ledger |
@@ -155,8 +156,8 @@ decision: the lane reads the objective, file count and whether a verification
 command is named off the spec, records the model/effort it runs as the actual
 route, and logs Jev's answer beside it (always log-only — a running lane's model
 and effort never change). The observed route is an exact match — Luna at
-`low`/`high`/`max` is `luna_low`/`luna_high`/`luna_max`, Sol at `high` is
-`sol_high` — and anything else (Luna at `xhigh`, say) is `unmapped` rather than
+`low`/`high`/`max` is `luna_low`/`luna_high`/`luna_max`, Sol at its configured
+effort is `sol_high` — and anything else (Luna at `xhigh`, say) is `unmapped` rather than
 folded into the nearest route; the real model and effort stay on the row. The
 `LANE REPORT` prints that `route id:`. The one manual step is
 `fable-route.py outcome --id <id> --outcome success|...`, which records whether
@@ -307,6 +308,7 @@ caller reroutes; it never silently substitutes a different model.
 | `skills/orchestration` | The routing policy. Loads when you are deciding whether and how to delegate. |
 | `agents/codex-implementer` | Runs `codex exec` (GPT-6 Luna at `low`/`high`/`max`, or Sol, as routed). The cross-vendor implementation lane. |
 | `agents/implementer` | Claude-side implementation. Depth chosen on the spawn: `model: haiku` / `sonnet` / `opus` (`claude_opus_high`), effort pinned `high`. |
+| `agents/failover-implementer` | The same contract as `implementer`, for an authorised codex failover only: `model: sonnet`, effort pinned `medium`. |
 | `scripts/fable-route.py` | The routing policy as code (`POLICY_VERSION`): hard rules, risk floor, `luna_max` eligibility, Fable consult triggers, review gate, ledger. Optional Jev layer behind `FABLE_JEV_MODE`. |
 | `scripts/fable-config.sh` | Every setting, as an environment variable with a safe default. |
 | `scripts/lane-preamble.md` | What codex reads before every spec: no delegation, the handoff file, NEED_TOOL, acceptance. Sent by `codex-lane.sh`, so no caller pastes it. |
@@ -340,6 +342,27 @@ Review in proportion to blast radius — Opus for risk, Fable only when the
 review itself is contested — and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
+
+## 5.7.0
+
+`sol_high` now runs `gpt-6.1-sol` (latest workhorse) at `medium` instead of
+`gpt-6-sol` at `high`. The route id is unchanged, so `by_route` stays
+continuous. Since 5.6.0 Sol is only an escalation after a failure (8 of 147
+decisions in 5.6.0), and its lane p90 was 591 s against the 570 s wall clock
+with 1 timeout in 7 attempts, this tries a newer model at lower effort for
+cost and wall-clock. Compare
+`scripts/routing-report.py` `by_policy_version["5.6.0"]` vs `by_policy_version["5.7.0"]`:
+`lane_attempts.by_route.sol_high` and `by_model_effort` `gpt-6-sol/high` vs
+`gpt-6.1-sol/medium`. Revert with `FABLE_CODEX_STRONG_EFFORT=high` (and/or the
+model var) without a code change. Backfill of the strong model at the old
+`high` effort is now `unmapped`.
+
+**`failover-implementer` is back, at `medium`.** An authorised codex failover
+ran `implementer` with `model: sonnet` at its `high` pin. That pin is shared
+with `claude_opus_high`, and a subagent's effort can only come from its agent
+file, so a cheaper failover needs its own file: `failover-implementer`
+(`sonnet`, effort `medium`), with `implementer`'s body unchanged. The senior
+worker stays on `implementer` at `high`. Keep the two bodies in step.
 
 ## 5.6.0
 

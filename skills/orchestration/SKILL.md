@@ -87,7 +87,7 @@ tree.
 
 | Result | Do |
 |---|---|
-| Codex unavailable (exit 3): quota, auth, network | Stop and report, with the reset time if given. Do not fail over to Claude silently — that spends the scarce quota exactly when the abundant one is gone. The user decides: wait, or authorise `implementer` with `model: sonnet`. |
+| Codex unavailable (exit 3): quota, auth, network | Stop and report, with the reset time if given. Do not fail over to Claude silently — that spends the scarce quota exactly when the abundant one is gone. The user decides: wait, or authorise `failover-implementer`. |
 | Timeout (exit 4) | Resume the same lane against the same worktree with a `RESUME` block from the reported handoff. Do not change lanes. |
 | `need_tool` | Run that one operation yourself and hand the result back. The lane keeps the task. |
 | Acceptance failed (exit 6) or empty diff (exit 1) | A failed attempt. Re-route with `prior_failures` raised; the router escalates. |

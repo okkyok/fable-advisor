@@ -1,6 +1,6 @@
 ---
 name: implementer
-description: Claude-side implementation lane — writes and tests a five-part spec itself and returns a structured report. The caller sets the model on the spawn (the router's `model` for the senior worker route; `sonnet` for an authorised codex-quota failover; `haiku` for bulk mechanical edits). Fable is not an implementation depth — it is consulted through `fable-advisor`.
+description: Claude-side implementation lane — writes and tests a five-part spec itself and returns a structured report. The caller sets the model on the spawn (the router's `model` for the senior worker route; `haiku` for bulk mechanical edits). Fable is not an implementation depth — it is consulted through `fable-advisor`.
 model: sonnet
 effort: high
 tools: Bash, Read, Write, Edit, Grep, Glob
