@@ -30,7 +30,10 @@ worth delegating" but "is there a reason this cannot go to codex".
 
 Models and efforts behind each role are configuration (`scripts/fable-config.sh`
 and the agents' `effort:` pins). Pass the router's `model` (or `reviewer_model`)
-as the spawn's `model`; it outranks the agent file.
+as the spawn's `model`; it outranks the agent file. The Agent tool's `model`
+takes only aliases (`sonnet`, `opus`, `haiku`, `fable`), so when the value is a
+full model id (the frontier advisor's `claude-fable-5-2`), omit `model` on the
+spawn: the agent file pins that id, and a `fable` alias would outrank it.
 
 ## Route with the router
 

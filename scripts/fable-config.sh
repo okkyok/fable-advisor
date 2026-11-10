@@ -28,7 +28,7 @@
 # and agents/opus-reviewer.md. The router reads those pins into the ledger, so
 # switching high -> medium is one line there and the report compares both.
 : "${FABLE_SENIOR_MODEL:=opus}"                # senior worker (claude_opus_high) and senior reviewer (opus_review)
-: "${FABLE_FRONTIER_MODEL:=fable}"             # frontier advisor (consult_first, fable_review)
+: "${FABLE_FRONTIER_MODEL:=claude-fable-5-2}"  # frontier advisor (consult_first, fable_review); pinned in agents/fable-advisor.md too
 
 # --- Routing ledger (permanent) ------------------------------------------------
 : "${FABLE_LEDGER:=$HOME/.claude/fable-advisor/routing.jsonl}"   # "off" disables writing
