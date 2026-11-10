@@ -271,7 +271,7 @@ v=$(review off '{"file_count":1,"mechanical":true,"verification_passed":true,"si
 check "a silence gap rules out review none" '[ "$(field "$v" review)" = self_review ]' "$v"
 reset_jev
 v=$(review active '{"file_count":3,"verification_passed":true,"lane_disagreement":true}')
-check "lane/model disagreement -> fable_review (exceptional) by rule" '[ "$(field "$v" review)|$(field "$v" review_decided_by)|$(field "$v" reviewer)|$(field "$v" reviewer_model)" = "fable_review|rule|fable-advisor|fable" ] && [ ! -e "$STUB_JEV_MARK" ]' "$v"
+check "lane/model disagreement -> fable_review (exceptional) by rule" '[ "$(field "$v" review)|$(field "$v" review_decided_by)|$(field "$v" reviewer)|$(field "$v" reviewer_model)" = "fable_review|rule|fable-advisor|claude-fable-5-2" ] && [ ! -e "$STUB_JEV_MARK" ]' "$v"
 v=$(review off '{"file_count":3,"schema_change":true,"verification_passed":true,"architectural_deadlock":true}')
 check "architectural deadlock outranks high risk: fable_review" '[ "$(field "$v" review)" = fable_review ] && grep -q "exceptional:architectural_deadlock" <<<"$(field "$v" rule)"' "$v"
 v=$(review off '{"file_count":3,"irreversible":true,"verification_passed":true,"opus_review_inconclusive":true}')

@@ -1,7 +1,7 @@
 ---
 name: fable-advisor
 description: Frontier advisor — questions the premises (the problem statement, the approach, the architecture), never writes code. Consult it when the router returns `consult_first: fable-advisor` (repeated failure, an architectural deadlock, a failed senior attempt, an expensive-to-reverse schema/API/migration decision), and for `fable_review`, when a senior review could not settle it or the framing itself is in doubt. Routine high-risk review is `opus-reviewer`, not this. Read-only.
-model: fable
+model: claude-fable-5-2
 tools: Read, Grep, Glob
 ---
 

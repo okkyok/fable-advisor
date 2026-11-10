@@ -88,7 +88,7 @@ luna_low ──► luna_high ──┬──► luna_max  (narrow, failed once, 
 | `none` | — | One file, mechanical, verification passed, no silence gap. Rule only. |
 | `self_review` | the orchestrator | Ordinary change. |
 | `opus_review` | `opus-reviewer` (Opus 5.5, `high`) | Security, schema, API, migration, concurrency, irreversible, wide blast radius, or resisted two attempts. |
-| `fable_review` | `fable-advisor` (Fable 5) | Exceptional only (above). Rule only. |
+| `fable_review` | `fable-advisor` (Fable 5.2) | Exceptional only (above). Rule only. |
 
 Jev is a cheap control-plane classifier that exists to avoid *unnecessary* Sol,
 Max and Opus calls — not a cheap substitute for any of them. It picks one key
@@ -121,7 +121,7 @@ all as environment variables:
 | `FABLE_CODEX_STRONG_MODEL` | `gpt-6.1-sol` | the `sol_high` model |
 | `FABLE_CODEX_STRONG_EFFORT` | `medium` | the `sol_high` effort |
 | `FABLE_SENIOR_MODEL` | `opus` | the senior worker (`claude_opus_high`) and senior reviewer (`opus_review`), passed as the spawn's `model` |
-| `FABLE_FRONTIER_MODEL` | `fable` | the frontier advisor (`consult_first`, `fable_review`) |
+| `FABLE_FRONTIER_MODEL` | `claude-fable-5-2` | the frontier advisor (`consult_first`, `fable_review`) |
 | `FABLE_LEDGER` | `~/.claude/fable-advisor/routing.jsonl` | `off` disables the ledger |
 | `FABLE_IMAJEV_MODE` | `off` | `off` \| `shadow`; anything else (including `active`) is `off`. See [Imajev-4B shadow comparison](#imajev-4b-shadow-comparison) |
 | `FABLE_IMAJEV_URL` | `http://127.0.0.1:8765/v1/systemone` | the Imajev server's System One endpoint |
@@ -321,7 +321,7 @@ caller reroutes; it never silently substitutes a different model.
 | `scripts/verify-codex-lane.sh` | End-to-end check: runs a real lane against a scratch repo and asserts a co-resident lane's uncommitted work survives. |
 | `tests/run.sh` | Offline suite (stub codex and Jev, a loopback Imajev stub server): routing in all three modes, Imajev shadow (same input, every failure, concurrency), every fallback, hard rules, `luna_max` eligibility, Opus escalation, Fable consult triggers, review gate, ledger, policy-versioned report, backfill, lane model/effort, expected/strict scope, harness acceptance, apply guards, isolation, concurrent lanes, prompt budgets. |
 | `agents/opus-reviewer` | `opus_review`: read-only senior reviewer (Opus, effort pinned `high`), fresh-context review with the silence gap; a second pass only when needed. |
-| `agents/fable-advisor` | Read-only frontier consult and exceptional reviewer (Fable 5): reframes stuck problems, never implements. Holds no write tools, so "advises only" is mechanical rather than aspirational. |
+| `agents/fable-advisor` | Read-only frontier consult and exceptional reviewer (Fable 5.2): reframes stuck problems, never implements. Holds no write tools, so "advises only" is mechanical rather than aspirational. |
 
 ## The routing policy in one paragraph
 
@@ -342,6 +342,20 @@ Review in proportion to blast radius — Opus for risk, Fable only when the
 review itself is contested — and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
+
+## 5.7.1
+
+The frontier advisor (`fable-advisor`: `consult_first`, `fable_review`) now runs
+Fable 5.2, pinned as `model: claude-fable-5-2` in `agents/fable-advisor.md`, and
+`FABLE_FRONTIER_MODEL` defaults to the same id so the ledger records it. The
+`fable` alias still resolves to `claude-fable-5-1` in Claude Code 2.1.319's
+catalog, and the Agent tool's per-spawn `model` takes aliases only, so the id
+lives in the agent file and the spawn omits `model` for this role (see the
+orchestration skill). Overriding `FABLE_FRONTIER_MODEL` changes the ledger
+value only; to change the model, edit the agent file.
+
+**Why no policy bump.** No route, rule or review trigger changes; rows already
+carry `reviewer_model`, so 5.1 and 5.2 consults split within policy 5.7.0.
 
 ## 5.7.0
 
