@@ -13,7 +13,7 @@
 # and reported instead of silently landing.
 #
 # usage: codex-lane.sh --spec <file> --files <f1,f2,...>
-#                      [--model gpt-6-luna] [--effort high] [--repo <path>] [--timeout 570]
+#                      [--model gpt-6.1-terra] [--effort low] [--repo <path>] [--timeout 570]
 #                      [--route-id <id from fable-route.py route>]
 #                      [--verify '<acceptance command>'] [--strict-scope]
 #
@@ -33,8 +33,8 @@
 #
 # --model / --effort default to FABLE_CODEX_DEFAULT_MODEL / FABLE_CODEX_DEFAULT_EFFORT
 # (scripts/fable-config.sh). Changing the default model is a config change, never
-# an edit here. Pass what fable-route.py returned: luna_max is `--effort max`,
-# which spends far more of the same --timeout than high does.
+# an edit here. Pass what fable-route.py returned: terra_medium is
+# `--model gpt-6.1-terra --effort medium`, from the router's lane_args.
 #
 # stdout: codex's last message, then a LANE REPORT block.
 # exit:   0 ok · 1 empty diff · 3 codex unavailable (missing, auth, quota, model
@@ -154,7 +154,7 @@ if [ -z "$REPO" ]; then
   d=$(dirname -- "$first"); [ -d "$d" ] || d=$(pwd)
   REPO=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null || true)
 fi
-[ -n "$REPO" ] && [ -d "$REPO/.git" ] || {
+[ -n "$REPO" ] && [ -e "$REPO/.git" ] || {
   echo "BLOCKED: --files do not resolve inside a git repository." >&2
   echo "A codex lane needs a repo to isolate into. Narrow the spec or pass --repo." >&2
   exit 5; }

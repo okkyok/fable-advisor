@@ -14,9 +14,10 @@ Route ids are stable names; the models behind them are configuration
 (fable-config.sh, and the agents' own `effort:` pins for Claude-side roles):
 
     luna_low          default worker, low effort    mechanical, one file, verified, no risk
-    luna_high         default worker                ordinary implementation (the default)
-    luna_max          default worker, max effort    narrow retry after one failure (gated)
-    sol_high          broad worker                  several interacting components
+    terra_low         default worker                ordinary implementation (the default)
+    terra_medium      deep worker                   narrow retry after one failure (gated)
+    sol_medium        broad worker                  several interacting components
+    sol_high          legacy alias for sol_medium
     claude_opus_high  senior worker (implementer)   two failures, or judgment a spec cannot carry
     Fable             frontier advisor: consult_first / fable_review, never implements
 
@@ -47,7 +48,7 @@ import threading
 import time
 import uuid
 
-POLICY_VERSION = "5.7.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
+POLICY_VERSION = "5.9.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENTS_DIR = os.path.join(os.path.dirname(HERE), "agents")
 sys.dont_write_bytecode = True  # importing jev_route must not litter the plugin directory
@@ -196,20 +197,21 @@ def high_risk(state):
 # --- routes -----------------------------------------------------------------------
 
 # Implementation routes. TIER orders them by cost for the risk floor only:
-# luna_max and sol_high share a tier because they are not a ladder — luna_max is
-# depth on a narrow retry, sol_high is breadth on integration-heavy work.
+# terra_medium and sol_medium share a tier because they are not a ladder —
+# terra_medium is depth on a narrow retry, sol_medium is breadth on integration work.
 # `self` (the orchestrator does it) is outside the order: only a Claude-side
 # rule chooses it. Fable is not here at all: it is consulted (consult_first) or
 # reviews (fable_review), and never implements, so neither Jev nor a caller can
 # route to it.
-ROUTES = ("luna_low", "luna_high", "luna_max", "sol_high", "claude_opus_high")
-TIER = {"luna_low": 0, "luna_high": 1, "luna_max": 2, "sol_high": 2, "claude_opus_high": 3}
+ROUTES = ("luna_low", "terra_low", "terra_medium", "sol_medium", "claude_opus_high")
+ROUTE_ALIASES = {"sol_high": "sol_medium"}
+TIER = {"luna_low": 0, "terra_low": 1, "terra_medium": 2, "sol_medium": 2, "claude_opus_high": 3}
 ROUTE_OPTIONS = {
     "luna_low": "Mechanical, localized, fully specified change with clear verification; little reasoning needed.",
-    "luna_high": "Ordinary well-specified implementation; the default route.",
-    "luna_max": "Narrow, clearly specified task with runnable verification that already failed once; "
+    "terra_low": "Ordinary well-specified implementation; the default route.",
+    "terra_medium": "Narrow, clearly specified task with runnable verification that already failed once; "
                 "needs deeper reasoning on the same small scope, not more breadth.",
-    "sol_high": "Broad or integration-heavy work: several interacting files or components, interface-heavy "
+    "sol_medium": "Broad or integration-heavy work: several interacting files or components, interface-heavy "
                 "implementation, or debugging with a wide search space.",
     "claude_opus_high": "Already failed, and what remains is a local judgment or trade-off a written spec "
                         "cannot pin down; the problem itself is understood.",
@@ -225,10 +227,10 @@ REVIEW_OPTIONS = {
 }
 REVIEW_QUESTION = "What review does this finished, verified change need before it is reported done?"
 
-# luna_max is a retry at the same small scope, so it stays inside a budget that a
-# max-effort run can finish under the lane's ~570 s wall clock: three files is
+# terra_medium is a retry at the same small scope, so it stays inside a budget
+# that a medium-effort run can finish under the lane's ~570 s wall clock: three files is
 # the largest "narrow" we are willing to assume before there is timeout data.
-LUNA_MAX_MAX_FILES = 3
+TERRA_MEDIUM_MAX_FILES = 3
 
 
 def agent_effort(agent):
@@ -254,11 +256,14 @@ def lane_for(route):
     model = os.environ["FABLE_CODEX_DEFAULT_MODEL"]
     return {
         "self": {"lane": "self"},
-        "luna_low": {"lane": "codex-implementer", "role": "default_worker", "model": model, "effort": "low"},
-        "luna_high": {"lane": "codex-implementer", "role": "default_worker", "model": model,
+        "luna_low": {"lane": "codex-implementer", "role": "default_worker",
+                     "model": os.environ["FABLE_CODEX_LIGHT_MODEL"], "effort": "low"},
+        "terra_low": {"lane": "codex-implementer", "role": "default_worker", "model": model,
                       "effort": os.environ["FABLE_CODEX_DEFAULT_EFFORT"]},
-        "luna_max": {"lane": "codex-implementer", "role": "deep_worker", "model": model, "effort": "max"},
-        "sol_high": {"lane": "codex-implementer", "role": "broad_worker",
+        "terra_medium": {"lane": "codex-implementer", "role": "deep_worker",
+                         "model": os.environ["FABLE_CODEX_DEEP_MODEL"],
+                         "effort": os.environ["FABLE_CODEX_DEEP_EFFORT"]},
+        "sol_medium": {"lane": "codex-implementer", "role": "broad_worker",
                      "model": os.environ["FABLE_CODEX_STRONG_MODEL"],
                      "effort": os.environ["FABLE_CODEX_STRONG_EFFORT"]},
         # The model is passed on the spawn (it outranks frontmatter); the effort
@@ -301,16 +306,16 @@ def failures(s):
     return s.get("prior_failures", 0)
 
 
-def luna_max_eligible(s):
-    """luna_max is a narrow retry, never a first attempt or a hard-task default.
+def terra_medium_eligible(s):
+    """terra_medium is a narrow retry, never a first attempt or a hard-task default.
 
     One failure (two already pin claude_opus_high), a runnable verification, a
     known and small file count, no breadth (multi_component, interface_change —
-    that is sol_high's shape), no risk flag, and no sign the approach itself is
+    that is sol_medium's shape), no risk flag, and no sign the approach itself is
     wrong (that goes to a Fable consult, not to more reasoning on the same spec).
     """
     return (failures(s) == 1 and flag(s, "verification_available")
-            and s.get("file_count") is not None and s["file_count"] <= LUNA_MAX_MAX_FILES
+            and s.get("file_count") is not None and s["file_count"] <= TERRA_MEDIUM_MAX_FILES
             and not flag(s, "multi_component") and not flag(s, "interface_change")
             and not high_risk(s)
             and not flag(s, "architectural_deadlock") and not flag(s, "opus_failed"))
@@ -338,16 +343,15 @@ def deterministic_route(s):
             and not high_risk(s) and not flag(s, "interface_change")
             and not flag(s, "multi_component")):
         return "luna_low", "mechanical_one_file", True
-    # A first retry stays at luna_high by rule; luna_max is an eligible option
-    # (Jev in active mode, or the caller) until the ledger shows it earns more.
-    return "luna_high", "retry" if failures(s) else "default", False
+    # A first retry stays at terra_low by rule; escalation routes require a prior failure.
+    return "terra_low", "retry" if failures(s) else "default", False
 
 
 def consult_reason(s):
     """Why fable-advisor must be consulted before implementing, or None.
 
     Fable reframes: it questions the approach and the problem statement, and its
-    answer becomes a new spec that a Luna/Sol/Opus lane implements.
+    answer becomes a new spec that a Terra/Sol/Opus lane implements.
     """
     if failures(s) >= 3:
         return "failed_three_times"
@@ -371,7 +375,7 @@ def route_floor(s):
         return "claude_opus_high"
     if (high_risk(s) or failures(s) >= 1 or not flag(s, "verification_available")
             or flag(s, "interface_change") or flag(s, "multi_component") or s.get("file_count") is None):
-        return "luna_high"
+        return "terra_low"
     return "luna_low"
 
 
@@ -388,21 +392,22 @@ def route_refusal(route, s, floor):
     caller alike, so no confidence and no override gets past it."""
     if below(route, floor):
         return "below_risk_floor"
-    if route == "luna_max" and not luna_max_eligible(s):
-        return "luna_max_ineligible"
+    if route == "sol_medium" and failures(s) < 1:
+        return "sol_medium_first_attempt"
+    if route == "terra_medium" and not terra_medium_eligible(s):
+        return "terra_medium_ineligible"
     return None
 
 
 def jev_route_options(s, floor):
     """The routes Jev may pick from in the ambiguous middle.
 
-    First attempts: luna_high (and luna_low when the floor allows). After one
-    failure: luna_high, sol_high, claude_opus_high, and luna_max when eligible.
+    First attempts: terra_low (and luna_low when the floor allows). After one
+    failure: terra_low, sol_medium, claude_opus_high, and terra_medium when eligible.
     Two failures never reach Jev (hard rule), and Fable is never an option.
     """
     return {k: v for k, v in ROUTE_OPTIONS.items()
             if route_refusal(k, s, floor) is None
-            and not (k == "sol_high" and failures(s) < 1)
             and not (k == "claude_opus_high" and failures(s) < 1)}
 
 
@@ -637,6 +642,8 @@ def log_inputs(record, fields, state, mode, imode):
 def cmd_route(args, text):
     state, ignored = parse_state(text, ROUTE_FIELDS)
     mode, imode = jev_mode(), imajev_mode()
+    route_alias = args.route if args.route in ROUTE_ALIASES else None
+    requested_route = ROUTE_ALIASES.get(args.route, args.route)
     legacy, rule, obvious = deterministic_route(state)
     floor = route_floor(state)
     record = {"event": "decision", "id": uuid.uuid4().hex[:12], "ts": now(),
@@ -645,16 +652,18 @@ def cmd_route(args, text):
               "jev_mode": mode, "legacy_route": legacy, "rule": rule, "floor": floor}
     if imode != "off":
         record.update(imajev_mode=imode, imajev_experiment_tag=experiment_tag())
-    if luna_max_eligible(state):
-        record["luna_max_eligible"] = True
+    if terra_medium_eligible(state):
+        record["terra_medium_eligible"] = True
     actual, decided_by = legacy, "rule" if obvious else "legacy"
 
     if args.route:
-        refusal = route_refusal(args.route, state, floor)
+        refusal = route_refusal(requested_route, state, floor)
         if refusal:
             record["override_rejected"] = refusal
         else:
-            actual, decided_by = args.route, "caller"
+            actual, decided_by = requested_route, "caller"
+            if route_alias:
+                record["route_alias"] = route_alias
     elif mode != "off" or imode != "off":
         if obvious:
             skip(record, mode, imode)
@@ -698,24 +707,16 @@ def cmd_route(args, text):
 
 
 def observed_route(model, effort):
-    """The route a lane's own model/effort amounts to, or "unmapped".
-
-    Exact matches only. A model/effort pair no route runs (Luna at medium or
-    xhigh, Sol at anything but its configured effort, another model) is "unmapped" rather than
-    the nearest route: folding xhigh into luna_high would contaminate exactly
-    the high-vs-max comparison the ledger exists for. The record keeps the
-    real model and effort either way.
-    """
-    if model == os.environ["FABLE_CODEX_STRONG_MODEL"]:
-        return "sol_high" if effort == os.environ["FABLE_CODEX_STRONG_EFFORT"] else "unmapped"
-    if model == os.environ["FABLE_CODEX_DEFAULT_MODEL"]:
-        if effort == "low":
-            return "luna_low"
-        if effort == "max":
-            return "luna_max"
-        if effort == os.environ["FABLE_CODEX_DEFAULT_EFFORT"]:
-            return "luna_high"
-    return "unmapped"
+    """Exact configured codex route pair, or "unmapped" when not unique."""
+    pairs = (
+        ("luna_low", os.environ["FABLE_CODEX_LIGHT_MODEL"], "low"),
+        ("terra_low", os.environ["FABLE_CODEX_DEFAULT_MODEL"], os.environ["FABLE_CODEX_DEFAULT_EFFORT"]),
+        ("terra_medium", os.environ["FABLE_CODEX_DEEP_MODEL"], os.environ["FABLE_CODEX_DEEP_EFFORT"]),
+        ("sol_medium", os.environ["FABLE_CODEX_STRONG_MODEL"], os.environ["FABLE_CODEX_STRONG_EFFORT"]),
+    )
+    matches = [route for route, configured_model, configured_effort in pairs
+               if model == configured_model and effort == configured_effort]
+    return matches[0] if len(matches) == 1 else "unmapped"
 
 
 def cmd_backfill(args):
@@ -890,8 +891,9 @@ def main(argv=None):
     r = sub.add_parser("route", help="decide an implementation route from a decision state on stdin")
     r.add_argument("--task", default="")
     r.add_argument("--class", dest="cls", default="implement")
-    r.add_argument("--route", choices=("self",) + ROUTES,
-                   help="the architect's explicit choice (still subject to the floor and luna_max eligibility)")
+    # luna_high is retired and deliberately has no alias because it used a different model.
+    r.add_argument("--route", choices=("self",) + ROUTES + tuple(ROUTE_ALIASES),
+                   help="the architect's explicit choice (sol_high is a legacy alias; terra_medium is eligibility-gated)")
     r.add_argument("--state", default="-", help="state file, or - for stdin")
     v = sub.add_parser("review", help="decide a review from a review state on stdin")
     v.add_argument("--id", help="the route decision's id, to join them in the ledger")

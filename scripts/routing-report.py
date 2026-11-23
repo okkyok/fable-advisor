@@ -36,6 +36,18 @@ from collections import Counter, defaultdict
 sys.dont_write_bytecode = True  # loading fable-route.py for its config must not litter the plugin
 BUCKETS = ((0.0, 0.5), (0.5, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.01))
 HISTORICAL = "pre-5.4"    # rows written before policy_version existed
+ROUTE_ALIASES = {"sol_high": "sol_medium"}
+
+
+def normalize_route_aliases(value):
+    """Fold legacy route aliases in loaded rows without rewriting the ledger."""
+    if isinstance(value, dict):
+        # route_alias records what the caller typed, so it is kept as written.
+        return {normalize_route_aliases(k): (v if k == "route_alias" else normalize_route_aliases(v))
+                for k, v in value.items()}
+    if isinstance(value, list):
+        return [normalize_route_aliases(v) for v in value]
+    return ROUTE_ALIASES.get(value, value) if isinstance(value, str) else value
 
 
 def load(path):
@@ -48,7 +60,7 @@ def load(path):
                 except ValueError:
                     continue
                 if isinstance(row, dict):
-                    rows.append(row)
+                    rows.append(normalize_route_aliases(row))
     except OSError:
         pass
     return rows
@@ -81,7 +93,7 @@ def mean(values):
 
 def pct(values, p):
     """Nearest-rank percentile; tail latency, not the mean, decides whether a
-    max-effort route fits under the lane's wall clock."""
+    route fits under the lane's wall clock."""
     values = sorted(v for v in (num(x) for x in values) if v is not None)
     if not values:
         return None

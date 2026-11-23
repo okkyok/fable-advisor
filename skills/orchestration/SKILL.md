@@ -22,8 +22,9 @@ worth delegating" but "is there a reason this cannot go to codex".
 
 | Role | Runs as |
 |---|---|
-| Default worker (`luna_low` / `luna_high` / `luna_max`) | `codex-implementer` → codex |
-| Broad worker (`sol_high`) — several interacting components, interface-heavy work, wide-search debugging | `codex-implementer` → codex |
+| Default worker (`luna_low` / `terra_low`) | `codex-implementer` → codex |
+| Deep worker (`terra_medium`) — narrow eligible retry | `codex-implementer` → codex |
+| Broad worker (`sol_medium`) — several interacting components, interface-heavy work, wide-search debugging | `codex-implementer` → codex |
 | Senior worker (`claude_opus_high`) | `implementer`, with the router's `model` on the spawn |
 | Senior reviewer (`opus_review`) | `opus-reviewer`, read-only |
 | Frontier advisor (`consult_first`, `fable_review`) | `fable-advisor`, read-only; reframes the problem, never implements |
@@ -34,6 +35,14 @@ as the spawn's `model`; it outranks the agent file. The Agent tool's `model`
 takes only aliases (`sonnet`, `opus`, `haiku`, `fable`), so when the value is a
 full model id (the frontier advisor's `claude-fable-5-2`), omit `model` on the
 spawn: the agent file pins that id, and a `fable` alias would outrank it.
+
+## Who is the architect (Orca only)
+
+Inside Orca, run `"${CLAUDE_PLUGIN_ROOT}/scripts/fable-architect.py" claim`, then `... wait`
+(it blocks for the acknowledgement window and costs no tokens). `primary`: do
+nothing; it runs the task end to end. `fallback`: you are the architect; if you
+run on another model than the one it names, say so once; on `lost`, tell the
+person the primary went silent. `session`, `released` or any error: nothing changes.
 
 ## Route with the router
 
@@ -59,8 +68,8 @@ anyone implements; a replacement spec it returns is a new task (its failures
 start at zero), a patched spec keeps `prior_failures`. `--route <id>` records a choice of your own; the router
 refuses one that breaks a floor. Two choices are yours to make:
 
-- `--route sol_high` when the work is broad rather than deep.
-- `--route luna_max` on a retry the router marks `luna_max_eligible`, when the
+- `--route sol_medium` when the work is broad rather than deep and has failed once (`sol_high` remains a legacy alias; refused on a first attempt).
+- `--route terra_medium` on a retry the router marks `terra_medium_eligible` (refused on a first attempt), when the
   failure was reasoning on a clear spec, not a missing requirement.
 
 ## Spec
