@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034,SC2209  # variables are read inside check's eval strings
-# Offline test suite: routing policy 5.7.0 (luna_max eligibility, claude_opus_high
+# Offline test suite: architect role in Orca (6.0.0), routing policy 5.9.0 (terra_medium eligibility, claude_opus_high
 # escalation, Fable consult triggers, strict scope), Jev modes and fallbacks,
 # review gate (self/opus/fable), ledger and the policy-versioned report,
 # backfill, the codex lane's model/effort, expected/strict scope, harness
@@ -35,6 +35,7 @@ ln -s "$ROOT/tests/stubs/jevstub" "$JEVBIN/semdecide"
 ln -s "$ROOT/tests/stubs/jevstub" "$JEVBIN/jev"
 CODEXBIN="$T/bin-codex"; mkdir -p "$CODEXBIN"; ln -s "$ROOT/tests/stubs/codex" "$CODEXBIN/codex"
 
+for v in $(env | sed -n 's/^\(ORCA_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done   # a run inside Orca must not leak into the tests
 unset TYPESAFE_API_KEY AI_GATEWAY_API_KEY OPENROUTER_API_KEY JEV_API_KEY JEV_PROVIDER
 for v in $(env | sed -n 's/^\(FABLE_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
 export HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config"; mkdir -p "$HOME"
@@ -51,8 +52,9 @@ last_line() { tail -n 1 "$FABLE_LEDGER"; }
 echo "Jev off"
 PATH="$BASE"
 r=$(route off "$MIDDLE")
-check "routes with no Jev binary and no credentials" '[ "$(field "$r" actual_route)" = luna_high ]' "$r"
-check "default model is gpt-6-luna at high" '[ "$(field "$r" model)/$(field "$r" effort)" = gpt-6-luna/high ]' "$r"
+check "routes with no Jev binary and no credentials" '[ "$(field "$r" actual_route)" = terra_low ]' "$r"
+check "default route is Terra low with default_worker role" '[ "$(field "$r" model)/$(field "$r" effort)/$(field "$r" role)" = gpt-6.1-terra/low/default_worker ]' "$r"
+check "default lane_args carry Terra low" '[[ "$(field "$r" lane_args)" == *"--model gpt-6.1-terra --effort low"* ]]' "$r"
 check "ledger row carries no jev_* fields" '! last_line | grep -qE "\"jev_(status|route|confidence|reason|backend|latency_ms|would_accept|input)\""' "$(last_line)"
 PATH="$JEVBIN:$BASE"; reset_jev
 r=$(route off "$MIDDLE")
@@ -60,24 +62,24 @@ printf '%s' '{"file_count":3,"verification_passed":true}' | FABLE_JEV_MODE=off p
 check "Jev on PATH is never invoked in off mode (route and review)" '[ ! -e "$STUB_JEV_MARK" ]'
 mkdir -p "$T/noadapter"; cp "$S/fable-route.py" "$S/fable-config.sh" "$T/noadapter/"
 r=$(printf '%s' "$MIDDLE" | FABLE_JEV_MODE=off python3 "$T/noadapter/fable-route.py" route)
-check "off mode works with jev_route.py deleted" '[ "$(field "$r" actual_route)" = luna_high ]' "$r"
+check "off mode works with jev_route.py deleted" '[ "$(field "$r" actual_route)" = terra_low ]' "$r"
 r=$(printf '%s' "$MIDDLE" | FABLE_JEV_MODE=shadow python3 "$T/noadapter/fable-route.py" route 2>/dev/null)
-check "adapter missing in shadow -> fallback adapter_missing" '[ "$(field "$r" jev_reason)" = adapter_missing ] && [ "$(field "$r" actual_route)" = luna_high ]' "$r"
+check "adapter missing in shadow -> fallback adapter_missing" '[ "$(field "$r" jev_reason)" = adapter_missing ] && [ "$(field "$r" actual_route)" = terra_low ]' "$r"
 r=$(route bogus "$MIDDLE")
 check "unknown FABLE_JEV_MODE is treated as off" '[ "$(field "$r" jev_mode)" = off ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
 PATH="$BASE"
 r=$(printf '%s' "$MIDDLE" | python3 "$S/fable-route.py" route 2>/dev/null)
 check "unset FABLE_JEV_MODE defaults to shadow" '[ "$(field "$r" jev_mode)" = shadow ]' "$r"
-check "default shadow without a Jev backend falls back and keeps the route" '[ "$(field "$r" jev_status)" = fallback ] && [ "$(field "$r" jev_reason)" = executable_missing ] && [ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" decided_by)" = legacy ]' "$r"
+check "default shadow without a Jev backend falls back and keeps the route" '[ "$(field "$r" jev_status)" = fallback ] && [ "$(field "$r" jev_reason)" = executable_missing ] && [ "$(field "$r" actual_route)" = terra_low ] && [ "$(field "$r" decided_by)" = legacy ]' "$r"
 check "no backend: Jev read nothing, so no jev_input is logged" '! last_line | grep -q "\"jev_input\""' "$(last_line)"
 PATH="$JEVBIN:$BASE"
 
 echo "Jev shadow"
 reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.91
 r=$(route shadow "$MIDDLE")
-check "Jev's choice does not change the actual route" '[ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" decided_by)" = legacy ]' "$r"
+check "Jev's choice does not change the actual route" '[ "$(field "$r" actual_route)" = terra_low ] && [ "$(field "$r" decided_by)" = legacy ]' "$r"
 row=$(last_line)
-check "ledger keeps legacy, jev route, confidence and actual" '[ "$(field "$row" legacy_route)|$(field "$row" jev_route)|$(field "$row" jev_confidence)|$(field "$row" actual_route)|$(field "$row" jev_status)" = "luna_high|luna_low|0.91|luna_high|shadow" ]' "$row"
+check "ledger keeps legacy, jev route, confidence and actual" '[ "$(field "$row" legacy_route)|$(field "$row" jev_route)|$(field "$row" jev_confidence)|$(field "$row" actual_route)|$(field "$row" jev_status)" = "terra_low|luna_low|0.91|terra_low|shadow" ]' "$row"
 check "shadow records whether active would have accepted it" '[ "$(field "$row" jev_would_accept)" = True ]' "$row"
 r=$(STUB_CONF=0.4 route shadow "$MIDDLE")
 check "shadow low confidence: would_accept false, reason low_confidence" '[ "$(field "$r" jev_would_accept)" = False ] && [ "$(field "$r" jev_reason)" = low_confidence ]' "$r"
@@ -87,59 +89,78 @@ reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.91
 r=$(route active "$MIDDLE")
 check "confident Jev route is adopted" '[ "$(field "$r" actual_route)" = luna_low ] && [ "$(field "$r" decided_by)" = jev ] && [ "$(field "$r" effort)" = low ]' "$r"
 r=$(STUB_CONF=0.79 route active "$MIDDLE")
-check "low confidence -> deterministic route" '[ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" jev_status)/$(field "$r" jev_reason)" = fallback/low_confidence ]' "$r"
+check "low confidence -> deterministic route" '[ "$(field "$r" actual_route)" = terra_low ] && [ "$(field "$r" jev_status)/$(field "$r" jev_reason)" = fallback/low_confidence ]' "$r"
 r=$(STUB_CONF=0.99 FABLE_JEV_MIN_CONFIDENCE=abc route active "$MIDDLE")
-check "invalid min confidence rejects even 0.99" '[ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" jev_reason)" = low_confidence ]' "$r"
+check "invalid min confidence rejects even 0.99" '[ "$(field "$r" actual_route)" = terra_low ] && [ "$(field "$r" jev_reason)" = low_confidence ]' "$r"
 r=$(PATH="$BASE" route active "$MIDDLE")
-check "Jev unavailable -> fallback executable_missing" '[ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" jev_reason)" = executable_missing ]' "$r"
+check "Jev unavailable -> fallback executable_missing" '[ "$(field "$r" actual_route)" = terra_low ] && [ "$(field "$r" jev_reason)" = executable_missing ]' "$r"
 r=$(STUB_JEV=malformed route active "$MIDDLE")
-check "malformed response -> fallback malformed" '[ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" jev_reason)" = malformed ]' "$r"
+check "malformed response -> fallback malformed" '[ "$(field "$r" actual_route)" = terra_low ] && [ "$(field "$r" jev_reason)" = malformed ]' "$r"
 r=$(STUB_JEV=noconf route active "$MIDDLE")
-check "missing confidence -> fallback no_confidence" '[ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" jev_reason)" = no_confidence ]' "$r"
+check "missing confidence -> fallback no_confidence" '[ "$(field "$r" actual_route)" = terra_low ] && [ "$(field "$r" jev_reason)" = no_confidence ]' "$r"
 r=$(STUB_CHOICE=gpt_ultra route active "$MIDDLE")
-check "unexpected choice -> fallback unknown_choice" '[ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" jev_reason)" = unknown_choice ]' "$r"
+check "unexpected choice -> fallback unknown_choice" '[ "$(field "$r" actual_route)" = terra_low ] && [ "$(field "$r" jev_reason)" = unknown_choice ]' "$r"
 t0=$(date +%s); r=$(STUB_JEV=sleep FABLE_JEV_TIMEOUT=1 route active "$MIDDLE"); t1=$(date +%s)
-check "timeout -> fallback timeout, bounded wait" '[ "$(field "$r" jev_reason)" = timeout ] && [ $((t1 - t0)) -lt 5 ] && [ "$(field "$r" actual_route)" = luna_high ]' "$r"
+check "timeout -> fallback timeout, bounded wait" '[ "$(field "$r" jev_reason)" = timeout ] && [ $((t1 - t0)) -lt 5 ] && [ "$(field "$r" actual_route)" = terra_low ]' "$r"
 r=$(STUB_JEV=exit:4 route active "$MIDDLE")
-check "semdecide provider/network failure -> fallback provider_error" '[ "$(field "$r" jev_reason)" = provider_error ] && [ "$(field "$r" actual_route)" = luna_high ]' "$r"
+check "semdecide provider/network failure -> fallback provider_error" '[ "$(field "$r" jev_reason)" = provider_error ] && [ "$(field "$r" actual_route)" = terra_low ]' "$r"
 r=$(STUB_JEV=exit:3 FABLE_JEV_BACKEND=jev-cli route active "$MIDDLE")
 check "jev-cli auth failure -> fallback auth" '[ "$(field "$r" jev_reason)" = auth ]' "$r"
 r=$(STUB_JEV=exit:4 FABLE_JEV_BACKEND=jev-cli route active "$MIDDLE")
 check "jev-cli network failure -> fallback network" '[ "$(field "$r" jev_reason)" = network ]' "$r"
 r=$(FABLE_JEV_BACKEND=jev-cli route active "$MIDDLE")
 check "jev-cli backend accepted when confident" '[ "$(field "$r" actual_route)" = luna_low ] && [ "$(field "$r" jev_backend)" = jev-cli ]' "$r"
-reset_jev; export STUB_CHOICE=sol_high STUB_CONF=0.9
+reset_jev; export STUB_CHOICE=sol_medium STUB_CONF=0.9
 r=$(route active '{"objective":"Rework cache invalidation across three services","file_count":6,"multi_component":true,"verification_available":true,"prior_failures":1}')
-check "sol_high maps to gpt-6.1-sol at medium" '[ "$(field "$r" model)/$(field "$r" effort)" = gpt-6.1-sol/medium ]' "$r"
-r=$(FABLE_CODEX_STRONG_EFFORT=high route off '{"file_count":4,"multi_component":true,"verification_available":true,"prior_failures":1}' --route sol_high)
-check "sol_high effort is configurable" '[ "$(field "$r" model)/$(field "$r" effort)" = gpt-6.1-sol/high ]' "$r"
+check "sol_medium maps to gpt-6.2-sol at medium" '[ "$(field "$r" model)/$(field "$r" effort)" = gpt-6.2-sol/medium ]' "$r"
+r=$(FABLE_CODEX_STRONG_EFFORT=high route off '{"file_count":4,"multi_component":true,"verification_available":true,"prior_failures":1}' --route sol_medium)
+check "sol_medium effort is configurable" '[ "$(field "$r" model)/$(field "$r" effort)" = gpt-6.2-sol/high ]' "$r"
+r=$(route off '{"file_count":4,"multi_component":true,"verification_available":true,"prior_failures":1}' --route sol_high)
+check "legacy --route sol_high is canonicalized to sol_medium" '[ "$(field "$r" actual_route)|$(field "$r" model)|$(field "$r" effort)|$(field "$r" route_alias)" = "sol_medium|gpt-6.2-sol|medium|sol_high" ]' "$r"
+if route off '{}' --route luna_high >"$T/invalid-route.out" 2>&1; then
+  check "retired luna_high route is refused" false "unexpected success"
+else
+  check "retired luna_high route is refused" 'grep -q "invalid choice" "$T/stderr"' "$(cat "$T/invalid-route.out")"
+fi
+r=$(route off '{"file_count":4,"multi_component":true,"verification_available":true}' --route sol_medium)
+check "first-attempt sol_medium refused for caller" '[ "$(field "$r" actual_route)|$(field "$r" override_rejected)" = "terra_low|sol_medium_first_attempt" ]' "$r"
+r=$(route off '{"file_count":4,"multi_component":true,"verification_available":true}' --route sol_high)
+check "first-attempt sol_high alias refused for caller" '[ "$(field "$r" actual_route)|$(field "$r" override_rejected)" = "terra_low|sol_medium_first_attempt" ]' "$r"
+r=$(route off '{"file_count":1,"verification_available":true,"prior_failures":1}' --route terra_medium)
+check "eligible terra_medium retry uses Terra medium deep_worker" '[ "$(field "$r" actual_route)|$(field "$r" model)|$(field "$r" effort)|$(field "$r" role)" = "terra_medium|gpt-6.1-terra|medium|deep_worker" ]' "$r"
+r=$(route off '{"file_count":1,"verification_available":true}' --route terra_medium)
+check "ineligible terra_medium is refused" '[ "$(field "$r" actual_route)|$(field "$r" override_rejected)" = "terra_low|terra_medium_ineligible" ]' "$r"
+printf '%s' '{"file_count":1,"verification_available":true,"prior_failures":1}' | python3 "$S/fable-route.py" route --route luna_max >/dev/null 2>&1; rc=$?
+check "--route luna_max is refused as an unknown route" '[ $rc -ne 0 ]'
+
 
 echo "Hard rules outrank Jev"
 reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.99
 RISKY='{"objective":"Rotate session tokens","file_count":3,"security_sensitive":true,"verification_available":true}'
 r=$(route active "$RISKY")
-check "security-sensitive floor skips Jev as a single option" '[ "$(field "$r" jev_status)|$(field "$r" skip_reason)|$(field "$r" actual_route)" = "skipped|single_option|luna_high" ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
+check "security-sensitive floor skips Jev as a single option" '[ "$(field "$r" jev_status)|$(field "$r" skip_reason)|$(field "$r" actual_route)" = "skipped|single_option|terra_low" ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
 r=$(route active '{"objective":"x","file_count":2,"verification_available":true,"prior_failures":1}')
-check "one prior failure raises the floor above luna_low" '[ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" floor)" = luna_high ]' "$r"
+check "one prior failure raises the floor above luna_low" '[ "$(field "$r" actual_route)" = terra_low ] && [ "$(field "$r" floor)" = terra_low ]' "$r"
 reset_jev
 r=$(route active '{"file_count":1,"mechanical":true,"verification_available":true}')
+check "mechanical one-file uses Luna low default_worker" '[ "$(field "$r" actual_route)|$(field "$r" model)|$(field "$r" effort)|$(field "$r" role)|$(field "$r" rule)" = "luna_low|gpt-6-luna|low|default_worker|mechanical_one_file" ]' "$r"
 check "obvious one-file mechanical case skips Jev without single_option reason" '[ "$(field "$r" actual_route)/$(field "$r" jev_status)" = luna_low/skipped ] && [ -z "$(field "$r" skip_reason)" ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
 r=$(route active '{"file_count":3,"prior_failures":2,"verification_available":true}')
 check "two failures -> claude_opus_high (implementer, opus, high), Jev skipped" '[ "$(field "$r" actual_route)/$(field "$r" lane)/$(field "$r" model)/$(field "$r" effort)" = claude_opus_high/implementer/opus/high ] && [ "$(field "$r" jev_status)" = skipped ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
 r=$(route active '{"file_count":3,"context_bound":true}')
 check "context-bound -> self" '[ "$(field "$r" actual_route)" = self ]' "$r"
 r=$(route off "$RISKY" --route luna_low)
-check "caller override below the risk floor is refused" '[ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" override_rejected)" = below_risk_floor ]' "$r"
-r=$(route off "$MIDDLE" --route sol_high)
-check "caller may choose sol_high explicitly" '[ "$(field "$r" actual_route)/$(field "$r" decided_by)" = sol_high/caller ]' "$r"
+check "caller override below the risk floor is refused" '[ "$(field "$r" actual_route)" = terra_low ] && [ "$(field "$r" override_rejected)" = below_risk_floor ]' "$r"
+r=$(route off '{"file_count":4,"multi_component":true,"verification_available":true,"prior_failures":1}' --route sol_medium)
+check "caller may choose sol_medium explicitly after a failure" '[ "$(field "$r" actual_route)/$(field "$r" decided_by)" = sol_medium/caller ]' "$r"
 r=$(route off '{"file_count":2,"schema_change":true,"verification_available":true}')
 check "schema change asks for a fable-advisor consult first" '[ "$(field "$r" consult_first)" = fable-advisor ]' "$r"
 reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.91
 r=$(route active '{"file_count":9,"interface_change":true,"multi_component":true,"verification_available":true}')
-check "interface/multi-component work cannot be sent to luna_low by Jev" '[ "$(field "$r" actual_route)/$(field "$r" floor)" = luna_high/luna_high ]' "$r"
+check "interface/multi-component work cannot be sent to luna_low by Jev" '[ "$(field "$r" actual_route)/$(field "$r" floor)" = terra_low/terra_low ]' "$r"
 r=$(route active '{"objective":"unknown size","verification_available":true}')
-check "unknown file_count keeps the floor at luna_high" '[ "$(field "$r" actual_route)" = luna_high ]' "$r"
-r=$(route off '{"file_count":3,"prior_failures":2,"verification_available":true}' --route luna_high)
+check "unknown file_count keeps the floor at terra_low" '[ "$(field "$r" actual_route)" = terra_low ]' "$r"
+r=$(route off '{"file_count":3,"prior_failures":2,"verification_available":true}' --route terra_low)
 check "after two failures an override below claude_opus_high is refused" '[ "$(field "$r" actual_route)" = claude_opus_high ] && [ "$(field "$r" override_rejected)" = below_risk_floor ]' "$r"
 r=$(route off '{"file_count":3,"prior_failures":2,"verification_available":true}' --route self)
 check "after two failures --route self is refused too" '[ "$(field "$r" actual_route)" = claude_opus_high ]' "$r"
@@ -147,12 +168,12 @@ r=$(route off "$MIDDLE" --route self)
 check "--route self is honoured otherwise" '[ "$(field "$r" actual_route)" = self ]' "$r"
 reset_jev; export STUB_CHOICE=gpt_ultra STUB_CONF=0.9
 r=$(route shadow "$MIDDLE")
-check "shadow keeps an off-list Jev answer visible in the ledger" '[ "$(field "$r" jev_route)/$(field "$r" jev_reason)" = gpt_ultra/unknown_choice ] && [ "$(field "$r" actual_route)" = luna_high ]' "$r"
+check "shadow keeps an off-list Jev answer visible in the ledger" '[ "$(field "$r" jev_route)/$(field "$r" jev_reason)" = gpt_ultra/unknown_choice ] && [ "$(field "$r" actual_route)" = terra_low ]' "$r"
 r=$(FABLE_JEV_TIMEOUT=inf route active "$MIDDLE")
 check "unbounded FABLE_JEV_TIMEOUT is clamped, routing continues" '[ -n "$(field "$r" actual_route)" ] && grep -q "FABLE_JEV_TIMEOUT" "$T/stderr"' "$r"
 
 echo "Jev input is minimal"
-reset_jev; export STUB_CHOICE=luna_high STUB_CONF=0.9
+reset_jev; export STUB_CHOICE=terra_low STUB_CONF=0.9
 long=$(python3 -c 'print("x"*2000)')
 route active "{\"objective\":\"$long\",\"file_count\":4,\"verification_available\":true,\"diff\":\"SECRET_DIFF\",\"context_bound\":false}" >/dev/null
 sent=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stdin"])' "$STUB_JEV_LOG")
@@ -165,9 +186,9 @@ sys.exit(0 if isinstance(row.get("jev_input"), dict) and row["jev_input"] == sen
 }
 check "active: the decision row logs the state Jev received as jev_input" 'same_input "$(last_line)"' "$(last_line)"
 check "the pasted diff and rule-only flags are not logged either" '! last_line | grep -qE "SECRET_DIFF|\"diff\"|context_bound"' "$(last_line)"
-reset_jev; export STUB_CHOICE=luna_high STUB_CONF=0.9
+reset_jev; export STUB_CHOICE=terra_low STUB_CONF=0.9
 r=$(route shadow '{"objective":"Split the parser","file_count":5,"verification_available":true,"below_spawn_floor":false,"notes":"PASTED"}')
-check "shadow: jev_input matches what Jev received, and the route is unchanged" 'same_input "$(last_line)" && [ "$(field "$r" actual_route)|$(field "$r" jev_status)" = "luna_high|shadow" ]' "$(last_line)"
+check "shadow: jev_input matches what Jev received, and the route is unchanged" 'same_input "$(last_line)" && [ "$(field "$r" actual_route)|$(field "$r" jev_status)" = "terra_low|shadow" ]' "$(last_line)"
 check "shadow: unknown and rule-only keys never reach jev_input" '! last_line | grep -qE "PASTED|\"notes\"|below_spawn_floor"' "$(last_line)"
 reset_jev
 route shadow '{"file_count":1,"mechanical":true,"verification_available":true}' >/dev/null
@@ -177,51 +198,51 @@ check "off mode: the same ambiguous task logs no jev_input" '! last_line | grep 
 rep=$(python3 "$S/routing-report.py" --json)
 check "report breaks Jev's recommendations down by the input it saw" 'python3 -c "
 import json,sys; b=json.loads(sys.argv[1])[\"current_policy\"][\"jev\"][\"recommendation_by_input\"]
-assert b[\"multi_component\"][\"true\"].get(\"sol_high\",0)>=1, b
+assert b[\"multi_component\"][\"true\"].get(\"sol_medium\",0)>=1, b
 assert b[\"file_count\"][\"4+\"] and \"absent\" in b[\"prior_failures\"], b
 assert set(b)=={\"prior_failures\",\"file_count\",\"multi_component\",\"interface_change\"}, b
 " "$rep"' "$rep"
 
-echo "5.4 routing policy: Luna Max, Opus, Fable"
+echo "5.8 routing policy: Terra medium, Opus, Fable"
 NARROW='{"objective":"Fix rounding in the price formatter","file_count":2,"verification_available":true,"prior_failures":1}'
 offered() { python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["argv"]; print(" ".join(x.split("=")[0] for x in a if "=" in x and not x.startswith("-")))' "$STUB_JEV_LOG"; }
 reset_jev
 r=$(route off "$NARROW")
-check "first failure + narrow + verification: luna_max eligible, deterministic stays luna_high" '[ "$(field "$r" luna_max_eligible)|$(field "$r" legacy_route)|$(field "$r" actual_route)|$(field "$r" rule)" = "True|luna_high|luna_high|retry" ]' "$r"
-check "off mode on a luna_max-eligible task: Jev never called, no jev fields" '[ ! -e "$STUB_JEV_MARK" ] && ! last_line | grep -qE "\"jev_(status|route|confidence|reason|backend|latency_ms|would_accept|input)\""' "$(last_line)"
-reset_jev; export STUB_CHOICE=luna_max STUB_CONF=0.9
+check "first failure + narrow + verification: terra_medium eligible, deterministic stays terra_low" '[ "$(field "$r" terra_medium_eligible)|$(field "$r" legacy_route)|$(field "$r" actual_route)|$(field "$r" rule)" = "True|terra_low|terra_low|retry" ]' "$r"
+check "off mode on a terra_medium-eligible task: Jev never called, no jev fields" '[ ! -e "$STUB_JEV_MARK" ] && ! last_line | grep -qE "\"jev_(status|route|confidence|reason|backend|latency_ms|would_accept|input)\""' "$(last_line)"
+reset_jev; export STUB_CHOICE=terra_medium STUB_CONF=0.9
 r=$(route shadow "$NARROW")
-check "shadow: Jev's luna_max is logged, the route does not change" '[ "$(field "$r" jev_route)|$(field "$r" jev_status)|$(field "$r" jev_would_accept)|$(field "$r" actual_route)|$(field "$r" effort)" = "luna_max|shadow|True|luna_high|high" ]' "$r"
-check "after one failure Jev is offered luna_high, luna_max, sol_high, claude_opus_high — never Fable" '[ "$(offered)" = "luna_high luna_max sol_high claude_opus_high" ]' "$(offered)"
+check "shadow: Jev's terra_medium is logged, the route does not change" '[ "$(field "$r" jev_route)|$(field "$r" jev_status)|$(field "$r" jev_would_accept)|$(field "$r" actual_route)|$(field "$r" effort)" = "terra_medium|shadow|True|terra_low|low" ]' "$r"
+check "after one failure Jev is offered terra_low, terra_medium, sol_medium, claude_opus_high — never Fable" '[ "$(offered)" = "terra_low terra_medium sol_medium claude_opus_high" ]' "$(offered)"
 r=$(route active "$NARROW")
-check "active + confident + eligible: luna_max adopted (gpt-6-luna at max)" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" model)|$(field "$r" effort)" = "luna_max|jev|gpt-6-luna|max" ]' "$r"
+check "active + confident + eligible: terra_medium adopted (gpt-6.1-terra at medium)" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" model)|$(field "$r" effort)" = "terra_medium|jev|gpt-6.1-terra|medium" ]' "$r"
 r=$(STUB_CONF=0.6 route active "$NARROW")
-check "active + low confidence: luna_max not adopted" '[ "$(field "$r" actual_route)|$(field "$r" jev_reason)" = "luna_high|low_confidence" ]' "$r"
+check "active + low confidence: terra_medium not adopted" '[ "$(field "$r" actual_route)|$(field "$r" jev_reason)" = "terra_low|low_confidence" ]' "$r"
 for broad in '"multi_component":true' '"interface_change":true' '"security_sensitive":true' '"file_count":6'; do
   st=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1]); d.update(json.loads("{"+sys.argv[2]+"}")); print(json.dumps(d))' "$NARROW" "$broad")
   r=$(STUB_CONF=0.99 route active "$st")
-  check "first failure + $broad: luna_max not eligible, not offered, not adopted at 0.99" '[ -z "$(field "$r" luna_max_eligible)" ] && [ "$(field "$r" actual_route)" = luna_high ] && [ "$(field "$r" jev_reason)" = unknown_choice ] && ! grep -qw luna_max <<<"$(offered)"' "$r"
+  check "first failure + $broad: terra_medium not eligible, not offered, not adopted at 0.99" '[ -z "$(field "$r" terra_medium_eligible)" ] && [ "$(field "$r" actual_route)" = terra_low ] && [ "$(field "$r" jev_reason)" = unknown_choice ] && ! grep -qw terra_medium <<<"$(offered)"' "$r"
 done
-r=$(route active '{"file_count":1,"verification_available":true,"prior_failures":1}' --route luna_max)
-check "caller may pick luna_max for an eligible retry" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" effort)" = "luna_max|caller|max" ]' "$r"
-r=$(route off "$MIDDLE" --route luna_max)
-check "first attempt: caller --route luna_max is refused (luna_max_ineligible)" '[ "$(field "$r" actual_route)|$(field "$r" override_rejected)" = "luna_high|luna_max_ineligible" ]' "$r"
-r=$(route off '{"file_count":2,"verification_available":true,"prior_failures":1,"multi_component":true}' --route luna_max)
-check "broad retry: caller --route luna_max is refused" '[ "$(field "$r" override_rejected)" = luna_max_ineligible ]' "$r"
-reset_jev; export STUB_CHOICE=luna_max STUB_CONF=0.99
+r=$(route active '{"file_count":1,"verification_available":true,"prior_failures":1}' --route terra_medium)
+check "caller may pick terra_medium for an eligible retry" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" effort)" = "terra_medium|caller|medium" ]' "$r"
+r=$(route off "$MIDDLE" --route terra_medium)
+check "first attempt: caller --route terra_medium is refused (terra_medium_ineligible)" '[ "$(field "$r" actual_route)|$(field "$r" override_rejected)" = "terra_low|terra_medium_ineligible" ]' "$r"
+r=$(route off '{"file_count":2,"verification_available":true,"prior_failures":1,"multi_component":true}' --route terra_medium)
+check "broad retry: caller --route terra_medium is refused" '[ "$(field "$r" override_rejected)" = terra_medium_ineligible ]' "$r"
+reset_jev; export STUB_CHOICE=terra_medium STUB_CONF=0.99
 r=$(route active "$MIDDLE")
-check "first attempt: Jev is offered luna_low/luna_high only; sol_high and luna_max refused" '[ "$(offered)" = "luna_low luna_high" ] && [ "$(field "$r" actual_route)|$(field "$r" jev_reason)" = "luna_high|unknown_choice" ]' "$r $(offered)"
+check "first attempt: Jev is offered luna_low/terra_low only; sol_medium and terra_medium refused" '[ "$(offered)" = "luna_low terra_low" ] && [ "$(field "$r" actual_route)|$(field "$r" jev_reason)" = "terra_low|unknown_choice" ]' "$r $(offered)"
 reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.9
 r=$(route shadow '{"file_count":4,"verification_available":true}')
-check "first attempt with luna_low floor offers exactly luna_low/luna_high" '[ "$(offered)" = "luna_low luna_high" ]' "$(offered)"
+check "first attempt with luna_low floor offers exactly luna_low/terra_low" '[ "$(offered)" = "luna_low terra_low" ]' "$(offered)"
 reset_jev
 r=$(route shadow '{"file_count":4,"multi_component":true,"verification_available":true}')
-check "first attempt with luna_high floor skips Jev as single_option" '[ "$(field "$r" jev_status)|$(field "$r" skip_reason)|$(field "$r" actual_route)|$(field "$r" decided_by)" = "skipped|single_option|luna_high|legacy" ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
+check "first attempt with terra_low floor skips Jev as single_option" '[ "$(field "$r" jev_status)|$(field "$r" skip_reason)|$(field "$r" actual_route)|$(field "$r" decided_by)" = "skipped|single_option|terra_low|legacy" ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
 r=$(STUB_CHOICE=claude_opus_high route active "$MIDDLE")
-check "first attempt: Jev cannot send work to Opus" '[ "$(field "$r" actual_route)|$(field "$r" jev_reason)" = "luna_high|unknown_choice" ]' "$r"
+check "first attempt: Jev cannot send work to Opus" '[ "$(field "$r" actual_route)|$(field "$r" jev_reason)" = "terra_low|unknown_choice" ]' "$r"
 r=$(STUB_CHOICE=claude_opus_high route active '{"file_count":6,"multi_component":true,"verification_available":true,"prior_failures":1}')
 check "after one failure a confident Jev may escalate to claude_opus_high" '[ "$(field "$r" actual_route)|$(field "$r" model)|$(field "$r" effort)" = "claude_opus_high|opus|high" ]' "$r"
-r=$(STUB_CHOICE=luna_high route active '{"file_count":3,"prior_failures":2,"verification_available":true}')
+r=$(STUB_CHOICE=terra_low route active '{"file_count":3,"prior_failures":2,"verification_available":true}')
 check "two failures: a confident Jev cannot pull the hard-rule Opus route down" '[ "$(field "$r" actual_route)|$(field "$r" jev_status)" = "claude_opus_high|skipped" ]' "$r"
 reset_jev
 r=$(route active '{"file_count":3,"prior_failures":3,"verification_available":true}')
@@ -229,7 +250,7 @@ check "three failures -> consult_first fable-advisor, implementation stays claud
 r=$(route active '{"file_count":3,"verification_available":true,"architectural_deadlock":true}')
 check "architectural_deadlock -> consult_first fable-advisor, Jev skipped" '[ "$(field "$r" consult_first)|$(field "$r" consult_reason)|$(field "$r" jev_status)|$(field "$r" actual_route)" = "fable-advisor|architectural_deadlock|skipped|claude_opus_high" ]' "$r"
 r=$(route active '{"file_count":3,"verification_available":true,"prior_failures":1,"opus_failed":true}')
-check "opus_failed -> consult_first fable-advisor" '[ "$(field "$r" consult_first)|$(field "$r" consult_reason)" = "fable-advisor|opus_failed" ] && [ -z "$(field "$r" luna_max_eligible)" ]' "$r"
+check "opus_failed -> consult_first fable-advisor" '[ "$(field "$r" consult_first)|$(field "$r" consult_reason)" = "fable-advisor|opus_failed" ] && [ -z "$(field "$r" terra_medium_eligible)" ]' "$r"
 r=$(route active '{"file_count":3,"verification_available":true,"judgment_dominated":true}')
 check "judgment_dominated -> claude_opus_high by rule, no Fable consult" '[ "$(field "$r" actual_route)|$(field "$r" rule)|$(field "$r" jev_status)" = "claude_opus_high|judgment_dominated|skipped" ] && [ -z "$(field "$r" consult_first)" ]' "$r"
 r=$(route off '{"file_count":3,"prior_failures":2,"verification_available":true}')
@@ -242,8 +263,8 @@ assert set(m.REVIEW_JEV_OPTIONS)=={\"self_review\",\"opus_review\"}
 printf '%s' "$MIDDLE" | python3 "$S/fable-route.py" route --route claude_fable >/dev/null 2>"$T/stderr"; rc=$?
 check "--route claude_fable is refused with a pointer to its replacement" '[ $rc -eq 2 ] && grep -q claude_opus_high "$T/stderr"' "$(cat "$T/stderr")"
 r=$(route off "$MIDDLE")
-check "every new decision carries policy_version 5.7.0" '[ "$(field "$r" policy_version)" = 5.7.0 ] && [ "$(field "$(last_line)" policy_version)" = 5.7.0 ]' "$r"
-reset_jev; export STUB_CHOICE=luna_high STUB_CONF=0.9
+check "every new decision carries policy_version 5.9.0" '[ "$(field "$r" policy_version)" = 5.9.0 ] && [ "$(field "$(last_line)" policy_version)" = 5.9.0 ]' "$r"
+reset_jev; export STUB_CHOICE=terra_low STUB_CONF=0.9
 route active '{"file_count":2,"verification_available":true,"prior_failures":1,"opus_failed":false,"architectural_deadlock":false,"judgment_dominated":false}' >/dev/null
 sent=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["stdin"])' "$STUB_JEV_LOG")
 check "rule-only consult flags are never sent to Jev" '! grep -qE "opus_failed|architectural_deadlock|judgment_dominated" <<<"$sent"' "$sent"
@@ -283,21 +304,21 @@ v=$(review active '{"file_count":5,"lines_changed":900,"verification_passed":tru
 check "Jev review options are self_review/opus_review only" '[ "$(offered)" = "self_review opus_review" ]' "$(offered)"
 check "Jev cannot choose fable_review, even at 0.99" '[ "$(field "$v" review)|$(field "$v" jev_reason)" = "self_review|unknown_choice" ]' "$v"
 v=$(STUB_CHOICE=opus_review review shadow '{"file_count":5,"lines_changed":900,"verification_passed":true}')
-check "shadow review: Jev's opus_review is logged, review stays self_review" '[ "$(field "$v" review)|$(field "$v" jev_route)|$(field "$v" jev_status)|$(field "$v" policy_version)" = "self_review|opus_review|shadow|5.7.0" ]' "$v"
+check "shadow review: Jev's opus_review is logged, review stays self_review" '[ "$(field "$v" review)|$(field "$v" jev_route)|$(field "$v" jev_status)|$(field "$v" policy_version)" = "self_review|opus_review|shadow|5.9.0" ]' "$v"
 
 echo "Ledger and report"
 reset_jev; export STUB_CHOICE=luna_low STUB_CONF=0.91
 r=$(route shadow "$MIDDLE" --task "retry handling"); id=$(field "$r" id)
 review off '{"file_count":4,"verification_passed":true}' "$id" >/dev/null
 o=$(python3 "$S/fable-route.py" outcome --id "$id" --outcome success --attempts 1 --duration 180)
-check "outcome row joins decision and review" '[ "$(field "$o" legacy_route)|$(field "$o" jev_route)|$(field "$o" review)|$(field "$o" duration_s)|$(field "$o" model)" = "luna_high|luna_low|self_review|180.0|gpt-6-luna" ]' "$o"
+check "outcome row joins decision and review" '[ "$(field "$o" legacy_route)|$(field "$o" jev_route)|$(field "$o" review)|$(field "$o" duration_s)|$(field "$o" model)" = "terra_low|luna_low|self_review|180.0|gpt-6.1-terra" ]' "$o"
 echo '{"ts":"2026-08-01T00:00:00Z","task":"old","class":"implement","lane":"codex-implementer","reason":"none","outcome":"success","attempts":1,"duration_s":60}' >> "$FABLE_LEDGER"
 rep=$(python3 "$S/routing-report.py" 2>&1)
 check "report runs and shows agreement, buckets, route stats" 'grep -q agreement_with_legacy <<<"$rep" && grep -q confidence_buckets <<<"$rep" && grep -q by_route <<<"$rep"' "$rep"
 check "report reads pre-5.1 ledger lines" 'grep -q pre_5_1_records <<<"$rep"' "$rep"
 j=$(python3 "$S/routing-report.py" --json)
 check "report --json is valid JSON" 'python3 -c "import json,sys; json.loads(sys.argv[1])" "$j"'
-{ echo '{"event":"decision","id":"x1","jev_route":"luna_low","jev_confidence":null,"legacy_route":"luna_high"}'
+{ echo '{"event":"decision","id":"x1","jev_route":"luna_low","jev_confidence":null,"legacy_route":"terra_low"}'
   echo '{"event":"decision","id":"x2","jev_route":"luna_low","jev_confidence":"high"}'
   echo '{"event":"outcome","id":["a"],"attempts":"2","outcome":"success"}'
   echo '{"event":"outcome","id":"x3","attempts":true,"jev_mode":["weird"]}'
@@ -305,8 +326,8 @@ check "report --json is valid JSON" 'python3 -c "import json,sys; json.loads(sys
 python3 "$S/routing-report.py" >/dev/null 2>"$T/rep-err"; rc=$?
 check "report survives malformed ledger rows" '[ $rc -eq 0 ]' "$(cat "$T/rep-err")"
 o=$(python3 "$S/fable-route.py" outcome --id "$id" --outcome retry --attempts 2 2>&1); rc=$?
-check "outcome still records against a malformed ledger" '[ $rc -eq 0 ] && [ "$(field "$o" legacy_route)" = luna_high ]' "$o"
-check "an outcome inherits its decision's policy_version" '[ "$(field "$o" policy_version)" = 5.7.0 ]' "$o"
+check "outcome still records against a malformed ledger" '[ $rc -eq 0 ] && [ "$(field "$o" legacy_route)" = terra_low ]' "$o"
+check "an outcome inherits its decision's policy_version" '[ "$(field "$o" policy_version)" = 5.9.0 ]' "$o"
 echo '{"event":"decision","id":"pre54","legacy_route":"claude_fable","actual_route":"claude_fable","lane":"implementer","model":"fable"}' >> "$FABLE_LEDGER"
 o=$(python3 "$S/fable-route.py" outcome --id pre54 --outcome success 2>&1)
 check "an outcome on a pre-5.4 decision stays unversioned (historical), route kept" '[ -z "$(field "$o" policy_version)" ] && [ "$(field "$o" actual_route)" = claude_fable ]' "$o"
@@ -319,23 +340,23 @@ assert \"claude_fable\" not in d[\"current_policy\"][\"route_distribution\"] and
 echo "Report: policy versions are never mixed"
 MIX="$T/mixed.jsonl"
 { # v5.3-era rows: no policy_version, the retired claude_fable route and Fable reviews
-  echo '{"event":"decision","id":"old1","legacy_route":"luna_high","actual_route":"luna_high","jev_mode":"shadow","jev_status":"shadow","jev_route":"sol_high","jev_confidence":0.9,"jev_would_accept":true,"lane":"codex-implementer","model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"decision","id":"old1","legacy_route":"terra_low","actual_route":"terra_low","jev_mode":"shadow","jev_status":"shadow","jev_route":"sol_medium","jev_confidence":0.9,"jev_would_accept":true,"lane":"codex-implementer","model":"gpt-6-luna","effort":"high"}'
   echo '{"event":"attempt","id":"old1","lane_status":"ok","duration_s":100,"model":"gpt-6-luna","effort":"high"}'
   echo '{"event":"attempt","id":"old1","policy_version":"5.4.0","lane_status":"ok","duration_s":50,"model":"gpt-6-luna","effort":"high"}'
-  echo '{"event":"outcome","id":"old1","actual_route":"luna_high","jev_status":"shadow","jev_route":"sol_high","outcome":"success","attempts":1}'
+  echo '{"event":"outcome","id":"old1","actual_route":"terra_low","jev_status":"shadow","jev_route":"sol_medium","outcome":"success","attempts":1}'
   echo '{"event":"decision","id":"old2","legacy_route":"claude_fable","actual_route":"claude_fable","jev_mode":"shadow","jev_status":"skipped","lane":"implementer","model":"fable"}'
   echo '{"event":"outcome","id":"old2","actual_route":"claude_fable","outcome":"success","attempts":1,"duration_s":900}'
-  echo '{"event":"decision","id":"old3","legacy_route":"luna_high","actual_route":"luna_high","jev_mode":"shadow","jev_status":"shadow","jev_route":"luna_high","jev_confidence":0.95}'
+  echo '{"event":"decision","id":"old3","legacy_route":"terra_low","actual_route":"terra_low","jev_mode":"shadow","jev_status":"shadow","jev_route":"terra_low","jev_confidence":0.95}'
   echo '{"event":"review","id":"old2","legacy_review":"fable_review","review":"fable_review","rule":"high_risk:schema_change"}'
   # v5.4 rows
-  echo '{"event":"decision","id":"new1","policy_version":"5.4.0","legacy_route":"luna_high","actual_route":"luna_high","jev_mode":"shadow","jev_status":"shadow","jev_route":"luna_max","jev_confidence":0.85,"jev_would_accept":true,"luna_max_eligible":true,"lane":"codex-implementer","model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"decision","id":"new1","policy_version":"5.4.0","legacy_route":"terra_low","actual_route":"terra_low","jev_mode":"shadow","jev_status":"shadow","jev_route":"terra_medium","jev_confidence":0.85,"jev_would_accept":true,"terra_medium_eligible":true,"lane":"codex-implementer","model":"gpt-6-luna","effort":"high"}'
   echo '{"event":"attempt","id":"new1","policy_version":"5.4.0","lane_status":"error","duration_s":200,"model":"gpt-6-luna","effort":"high"}'
   echo '{"event":"attempt","id":"new1","policy_version":"5.4.0","lane_status":"ok","duration_s":300,"model":"gpt-6-luna","effort":"high"}'
-  echo '{"event":"decision","id":"new2","policy_version":"5.4.0","legacy_route":"luna_high","actual_route":"luna_max","decided_by":"caller","jev_mode":"shadow","jev_status":"shadow","jev_route":"claude_opus_high","jev_confidence":0.7,"jev_would_accept":false,"lane":"codex-implementer","model":"gpt-6-luna","effort":"max"}'
+  echo '{"event":"decision","id":"new2","policy_version":"5.4.0","legacy_route":"terra_low","actual_route":"terra_medium","decided_by":"caller","jev_mode":"shadow","jev_status":"shadow","jev_route":"claude_opus_high","jev_confidence":0.7,"jev_would_accept":false,"lane":"codex-implementer","model":"gpt-6-luna","effort":"max"}'
   echo '{"event":"attempt","id":"new2","policy_version":"5.4.0","lane_status":"timeout","duration_s":570,"model":"gpt-6-luna","effort":"max"}'
   echo '{"event":"attempt","id":"new2","policy_version":"5.4.0","lane_status":"ok","duration_s":400,"model":"gpt-6-luna","effort":"max"}'
-  echo '{"event":"outcome","id":"new2","policy_version":"5.4.0","actual_route":"luna_max","jev_status":"shadow","jev_route":"claude_opus_high","outcome":"success","attempts":2,"duration_s":970}'
-  echo '{"event":"decision","id":"new3","policy_version":"5.4.0","legacy_route":"luna_high","actual_route":"sol_high","backfilled":true,"jev_mode":"shadow","jev_status":"shadow","jev_route":"sol_high","jev_confidence":0.9,"lane":"codex-implementer","model":"gpt-6-sol","effort":"high"}'
+  echo '{"event":"outcome","id":"new2","policy_version":"5.4.0","actual_route":"terra_medium","jev_status":"shadow","jev_route":"claude_opus_high","outcome":"success","attempts":2,"duration_s":970}'
+  echo '{"event":"decision","id":"new3","policy_version":"5.4.0","legacy_route":"terra_low","actual_route":"sol_medium","backfilled":true,"jev_mode":"shadow","jev_status":"shadow","jev_route":"sol_medium","jev_confidence":0.9,"lane":"codex-implementer","model":"gpt-6-sol","effort":"high"}'
   echo '{"event":"attempt","id":"new3","policy_version":"5.4.0","unrouted":true,"lane_status":"ok","duration_s":120,"model":"gpt-6-sol","effort":"high"}'
   echo '{"event":"decision","id":"new4","policy_version":"5.4.0","legacy_route":"claude_opus_high","actual_route":"claude_opus_high","rule":"failed_twice","jev_mode":"shadow","jev_status":"skipped","lane":"implementer","model":"opus","effort":"high"}'
   echo '{"event":"outcome","id":"new4","policy_version":"5.4.0","actual_route":"claude_opus_high","outcome":"success","attempts":1,"duration_s":600}'
@@ -344,38 +365,38 @@ MIX="$T/mixed.jsonl"
   # v5.5 rows: the current policy, which must not absorb any 5.4 evidence
   echo '{"event":"decision","id":"n55","policy_version":"5.5.0","legacy_route":"claude_opus_high","actual_route":"claude_opus_high","jev_mode":"shadow","jev_status":"skipped","lane":"implementer","model":"opus","effort":"medium"}'
   echo '{"event":"outcome","id":"n55","policy_version":"5.5.0","actual_route":"claude_opus_high","model":"opus","effort":"medium","outcome":"success","attempts":1,"duration_s":300,"reviewer":"opus-reviewer","reviewer_model":"opus","reviewer_effort":"medium","review_verdict":"fix_first","review_findings":2}'
-  echo '{"event":"decision","id":"n56","policy_version":"5.5.0","legacy_route":"luna_high","actual_route":"luna_high","jev_mode":"shadow","jev_status":"shadow","jev_route":"luna_high","jev_confidence":0.9,"lane":"codex-implementer","model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"decision","id":"n56","policy_version":"5.5.0","legacy_route":"terra_low","actual_route":"terra_low","jev_mode":"shadow","jev_status":"shadow","jev_route":"terra_low","jev_confidence":0.9,"lane":"codex-implementer","model":"gpt-6-luna","effort":"high"}'
   echo '{"event":"attempt","id":"n56","policy_version":"5.5.0","lane_status":"ok","verify":"fail","duration_s":90,"model":"gpt-6-luna","effort":"high"}'
   echo '{"event":"attempt","id":"n56","policy_version":"5.5.0","lane_status":"ok","verify":"pass","duration_s":60,"model":"gpt-6-luna","effort":"high"}'
   # v5.6 rows: current policy evidence, kept distinct from the 5.5 history
-  echo '{"event":"decision","id":"n65","policy_version":"5.7.0","legacy_route":"claude_opus_high","actual_route":"claude_opus_high","jev_mode":"shadow","jev_status":"skipped","lane":"implementer","model":"opus","effort":"medium"}'
-  echo '{"event":"outcome","id":"n65","policy_version":"5.7.0","actual_route":"claude_opus_high","model":"opus","effort":"medium","outcome":"success","attempts":1,"duration_s":300,"reviewer":"opus-reviewer","reviewer_model":"opus","reviewer_effort":"medium","review_verdict":"fix_first","review_findings":2}'
-  echo '{"event":"decision","id":"n66","policy_version":"5.7.0","legacy_route":"luna_high","actual_route":"luna_high","jev_mode":"shadow","jev_status":"shadow","jev_route":"luna_high","jev_confidence":0.9,"lane":"codex-implementer","model":"gpt-6-luna","effort":"high"}'
-  echo '{"event":"attempt","id":"n66","policy_version":"5.7.0","lane_status":"ok","verify":"fail","duration_s":90,"model":"gpt-6-luna","effort":"high"}'
-  echo '{"event":"attempt","id":"n66","policy_version":"5.7.0","lane_status":"ok","verify":"pass","duration_s":60,"model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"decision","id":"n65","policy_version":"5.9.0","legacy_route":"claude_opus_high","actual_route":"claude_opus_high","jev_mode":"shadow","jev_status":"skipped","lane":"implementer","model":"opus","effort":"medium"}'
+  echo '{"event":"outcome","id":"n65","policy_version":"5.9.0","actual_route":"claude_opus_high","model":"opus","effort":"medium","outcome":"success","attempts":1,"duration_s":300,"reviewer":"opus-reviewer","reviewer_model":"opus","reviewer_effort":"medium","review_verdict":"fix_first","review_findings":2}'
+  echo '{"event":"decision","id":"n66","policy_version":"5.9.0","legacy_route":"terra_low","actual_route":"terra_low","jev_mode":"shadow","jev_status":"shadow","jev_route":"terra_low","jev_confidence":0.9,"lane":"codex-implementer","model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"attempt","id":"n66","policy_version":"5.9.0","lane_status":"ok","verify":"fail","duration_s":90,"model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"attempt","id":"n66","policy_version":"5.9.0","lane_status":"ok","verify":"pass","duration_s":60,"model":"gpt-6-luna","effort":"high"}'
 } > "$MIX"
 rep=$(python3 "$S/routing-report.py" --ledger "$MIX" --json 2>&1); rc=$?
 check "report reads a mixed v5.3/v5.4/v5.5/v5.6 ledger (historical claude_fable rows included)" '[ $rc -eq 0 ]' "$rep"
-check "policy_version_distribution separates pre-5.4, 5.4.0, 5.5.0 and 5.7.0" 'python3 -c "
+check "policy_version_distribution separates pre-5.4, 5.4.0, 5.5.0 and 5.9.0" 'python3 -c "
 import json,sys; d=json.loads(sys.argv[1]); p=d[\"policy_version_distribution\"]
-assert p[\"decision\"]=={\"pre-5.4\":3,\"5.4.0\":4,\"5.5.0\":2,\"5.7.0\":2}, p
-assert p[\"attempt\"]=={\"pre-5.4\":2,\"5.4.0\":6,\"5.5.0\":2,\"5.7.0\":2}, p   # a 5.3 decision keeps its late 5.4-stamped attempt
-assert set(d[\"by_policy_version\"])=={\"pre-5.4\",\"5.4.0\",\"5.5.0\",\"5.7.0\"} and d[\"current_policy_version\"]==\"5.7.0\"
+assert p[\"decision\"]=={\"pre-5.4\":3,\"5.4.0\":4,\"5.5.0\":2,\"5.9.0\":2}, p
+assert p[\"attempt\"]=={\"pre-5.4\":2,\"5.4.0\":6,\"5.5.0\":2,\"5.9.0\":2}, p   # a 5.3 decision keeps its late 5.4-stamped attempt
+assert set(d[\"by_policy_version\"])=={\"pre-5.4\",\"5.4.0\",\"5.5.0\",\"5.9.0\"} and d[\"current_policy_version\"]==\"5.9.0\"
 " "$rep"' "$rep"
 check "headline Jev stats are current-policy only; every policy keeps its own section" 'python3 -c "
 import json,sys; d=json.loads(sys.argv[1]); cur=d[\"current_policy\"]; c=d[\"by_policy_version\"][\"5.4.0\"]; old=d[\"by_policy_version\"][\"pre-5.4\"]
-assert cur==d[\"by_policy_version\"][\"5.7.0\"] and cur[\"total_decisions\"]==2 and cur[\"jev\"][\"consulted\"]==1, cur[\"jev\"]
+assert cur==d[\"by_policy_version\"][\"5.9.0\"] and cur[\"total_decisions\"]==2 and cur[\"jev\"][\"consulted\"]==1, cur[\"jev\"]
 assert cur[\"jev\"][\"agreement_with_legacy\"]==1.0, cur[\"jev\"]
 assert c[\"jev\"][\"consulted\"]==3 and old[\"jev\"][\"consulted\"]==2, (c[\"jev\"], old[\"jev\"])
 assert c[\"jev\"][\"agreement_with_legacy\"]==0.0 and old[\"jev\"][\"agreement_with_legacy\"]==0.5, (c[\"jev\"], old[\"jev\"])
-assert c[\"jev\"][\"jev_recommendation_distribution\"]=={\"luna_max\":1,\"claude_opus_high\":1,\"sol_high\":1}, c[\"jev\"]
+assert c[\"jev\"][\"jev_recommendation_distribution\"]=={\"terra_medium\":1,\"claude_opus_high\":1,\"sol_medium\":1}, c[\"jev\"]
 assert \"claude_fable\" not in c[\"route_distribution\"] and old[\"route_distribution\"][\"claude_fable\"]==1
 assert \"note\" in d[\"historical_all\"] and d[\"historical_all\"][\"total_decisions\"]==11
 assert c[\"review\"][\"distribution\"]=={\"opus_review\":1} and old[\"review\"][\"distribution\"]=={\"fable_review\":1}
 " "$rep"' "$rep"
 check "5.5 report: acceptance pass rates, outcomes and review results per model/effort" 'python3 -c "
 import json,sys; c=json.loads(sys.argv[1])[\"current_policy\"]
-l=c[\"lane_attempts\"][\"by_route\"][\"luna_high\"]
+l=c[\"lane_attempts\"][\"by_route\"][\"terra_low\"]
 assert l[\"verify_first_pass\"]==0.0 and l[\"verify_eventually_pass\"]==1.0, l
 assert c[\"by_model_effort\"][\"gpt-6-luna/high\"][\"verify_pass_rate\"]==0.5, c[\"by_model_effort\"]
 o=c[\"outcomes_by_model_effort\"][\"claude_opus_high opus/medium\"]
@@ -385,15 +406,15 @@ assert r[\"avg_findings\"]==2 and r[\"verdicts\"]=={\"fix_first\":1}, r
 " "$rep"' "$rep"
 check "shadow counterfactuals distinguish the new routes" 'python3 -c "
 import json,sys; c=json.loads(sys.argv[1])[\"by_policy_version\"][\"5.4.0\"]; l=c[\"shadow_disagreement_lanes\"]
-assert l[\"jev=luna_max ran=luna_high\"][\"first_try_ok\"]==0.0 and l[\"jev=luna_max ran=luna_high\"][\"retry_rate\"]==1.0, l
-assert l[\"jev=luna_max ran=luna_high\"][\"would_accept_in_active\"]==1, l
-assert l[\"jev=claude_opus_high ran=luna_max\"][\"timeout_rate\"]==1.0, l
-assert \"jev=sol_high ran=sol_high\" not in l
-assert c[\"shadow_disagreement_outcomes\"][\"jev=claude_opus_high ran=luna_max\"][\"success_rate\"]==1.0
+assert l[\"jev=terra_medium ran=terra_low\"][\"first_try_ok\"]==0.0 and l[\"jev=terra_medium ran=terra_low\"][\"retry_rate\"]==1.0, l
+assert l[\"jev=terra_medium ran=terra_low\"][\"would_accept_in_active\"]==1, l
+assert l[\"jev=claude_opus_high ran=terra_medium\"][\"timeout_rate\"]==1.0, l
+assert \"jev=sol_medium ran=sol_medium\" not in l
+assert c[\"shadow_disagreement_outcomes\"][\"jev=claude_opus_high ran=terra_medium\"][\"success_rate\"]==1.0
 " "$rep"' "$rep"
 check "route stats carry p50/p90/timeout; by_model_effort keeps real pairs" 'python3 -c "
 import json,sys; c=json.loads(sys.argv[1])[\"by_policy_version\"][\"5.4.0\"]; r=c[\"lane_attempts\"][\"by_route\"]
-assert r[\"luna_max\"][\"p90_lane_s\"]==970 and r[\"luna_max\"][\"timeout_rate\"]==1.0 and r[\"luna_high\"][\"p50_lane_s\"]==500, r
+assert r[\"terra_medium\"][\"p90_lane_s\"]==970 and r[\"terra_medium\"][\"timeout_rate\"]==1.0 and r[\"terra_low\"][\"p50_lane_s\"]==500, r
 m=c[\"by_model_effort\"]
 assert set(m)=={\"gpt-6-luna/high\",\"gpt-6-luna/max\",\"gpt-6-sol/high\",\"gpt-6-luna/xhigh\"}, m
 assert m[\"gpt-6-luna/max\"][\"attempts\"]==2 and m[\"gpt-6-luna/max\"][\"p90_s\"]==570 and m[\"gpt-6-luna/max\"][\"timeout_rate\"]==0.5, m
@@ -423,24 +444,24 @@ check "default FABLE_IMAJEV_MODE is off, URL is the local System One endpoint" '
 check "config never contacts Imajev" '[ ! -e "$STUB_IMAJEV_MARK" ]'
 export STUB_CHOICE=luna_low STUB_CONF=0.91
 r=$(route shadow "$MIDDLE")
-check "unset FABLE_IMAJEV_MODE: Imajev never contacted, no imajev_* on the row, Jev shadow as before" '[ ! -e "$STUB_IMAJEV_MARK" ] && no_imajev_fields "$(last_line)" && [ "$(field "$r" jev_status)|$(field "$r" actual_route)" = "shadow|luna_high" ]' "$(last_line)"
+check "unset FABLE_IMAJEV_MODE: Imajev never contacted, no imajev_* on the row, Jev shadow as before" '[ ! -e "$STUB_IMAJEV_MARK" ] && no_imajev_fields "$(last_line)" && [ "$(field "$r" jev_status)|$(field "$r" actual_route)" = "shadow|terra_low" ]' "$(last_line)"
 for m in bogus active ACTIVE; do
   r=$(dual shadow "$m" "$MIDDLE")
-  check "FABLE_IMAJEV_MODE=$m is treated as off (no active mode), with a warning" '[ ! -e "$STUB_IMAJEV_MARK" ] && no_imajev_fields "$(last_line)" && grep -q FABLE_IMAJEV_MODE "$T/stderr" && [ "$(field "$r" actual_route)" = luna_high ]' "$r"
+  check "FABLE_IMAJEV_MODE=$m is treated as off (no active mode), with a warning" '[ ! -e "$STUB_IMAJEV_MARK" ] && no_imajev_fields "$(last_line)" && grep -q FABLE_IMAJEV_MODE "$T/stderr" && [ "$(field "$r" actual_route)" = terra_low ]' "$r"
 done
 reset_jev; reset_imajev
 r=$(dual off off "$MIDDLE")
-check "both off: deterministic route, neither model contacted" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)" = "luna_high|legacy" ] && [ ! -e "$STUB_IMAJEV_MARK" ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
+check "both off: deterministic route, neither model contacted" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)" = "terra_low|legacy" ] && [ ! -e "$STUB_IMAJEV_MARK" ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
 r=$(printf '%s' "$MIDDLE" | FABLE_JEV_MODE=off FABLE_IMAJEV_MODE=off python3 "$T/noadapter/fable-route.py" route)
-check "off works with imajev_route.py absent" '[ "$(field "$r" actual_route)" = luna_high ]' "$r"
+check "off works with imajev_route.py absent" '[ "$(field "$r" actual_route)" = terra_low ]' "$r"
 r=$(printf '%s' "$MIDDLE" | FABLE_JEV_MODE=off FABLE_IMAJEV_MODE=shadow python3 "$T/noadapter/fable-route.py" route 2>/dev/null)
-check "adapter missing in shadow -> imajev fallback adapter_missing, route kept, no imajev_input" '[ "$(field "$r" imajev_status)|$(field "$r" imajev_reason)|$(field "$r" actual_route)" = "fallback|adapter_missing|luna_high" ] && [ -z "$(field "$r" imajev_input)" ]' "$r"
+check "adapter missing in shadow -> imajev fallback adapter_missing, route kept, no imajev_input" '[ "$(field "$r" imajev_status)|$(field "$r" imajev_reason)|$(field "$r" actual_route)" = "fallback|adapter_missing|terra_low" ] && [ -z "$(field "$r" imajev_input)" ]' "$r"
 
 echo "Imajev shadow: answers are logged, never used"
 reset_jev; reset_imajev
 r=$(dual off shadow "$MIDDLE")
 row=$(last_line)
-check "Imajev's choice is logged; the actual route does not change" '[ "$(field "$row" imajev_route)|$(field "$row" imajev_status)|$(field "$row" actual_route)|$(field "$row" decided_by)" = "luna_low|shadow|luna_high|legacy" ]' "$row"
+check "Imajev's choice is logged; the actual route does not change" '[ "$(field "$row" imajev_route)|$(field "$row" imajev_status)|$(field "$row" actual_route)|$(field "$row" decided_by)" = "luna_low|shadow|terra_low|legacy" ]' "$row"
 check "row keeps confidence, model, backend, latency, server time, unknown, abstained, would_accept" 'python3 -c "
 import json,sys; r=json.loads(sys.argv[1])
 assert r[\"imajev_confidence\"]==0.91 and r[\"imajev_model\"]==\"imajev-4b\" and r[\"imajev_backend\"]==\"imajev-local\", r
@@ -450,30 +471,30 @@ assert r[\"imajev_mode\"]==\"shadow\" and r[\"imajev_calibration_version\"]==\"s
 " "$row"' "$row"
 check "probabilities: one per offered option, off-list keys dropped" 'python3 -c "
 import json,sys; r=json.loads(sys.argv[1]); p=r[\"imajev_probabilities\"]
-assert set(p)=={\"luna_low\",\"luna_high\"} and p[\"luna_low\"]==0.9, p
+assert set(p)=={\"luna_low\",\"terra_low\"} and p[\"luna_low\"]==0.9, p
 " "$row"' "$row"
 check "jev off: no jev_* fields are written beside imajev_*" '! grep -qE "\"jev_(status|route|input|reason)\"" <<<"$row"' "$row"
 check "no experiment tag set: the field is omitted" '! grep -q imajev_experiment_tag <<<"$row"' "$row"
 r=$(FABLE_IMAJEV_EXPERIMENT_TAG=mlx-4b-rot4-cal dual off shadow "$MIDDLE")
-check "FABLE_IMAJEV_EXPERIMENT_TAG is logged and changes nothing else" '[ "$(field "$r" imajev_experiment_tag)|$(field "$r" actual_route)" = "mlx-4b-rot4-cal|luna_high" ]' "$r"
+check "FABLE_IMAJEV_EXPERIMENT_TAG is logged and changes nothing else" '[ "$(field "$r" imajev_experiment_tag)|$(field "$r" actual_route)" = "mlx-4b-rot4-cal|terra_low" ]' "$r"
 imajev_says '{"conf":0.5}'
 r=$(dual off shadow "$MIDDLE")
-check "low confidence: shadow, reason low_confidence, would_accept false" '[ "$(field "$r" imajev_status)|$(field "$r" imajev_reason)|$(field "$r" imajev_would_accept)|$(field "$r" actual_route)" = "shadow|low_confidence|False|luna_high" ]' "$r"
+check "low confidence: shadow, reason low_confidence, would_accept false" '[ "$(field "$r" imajev_status)|$(field "$r" imajev_reason)|$(field "$r" imajev_would_accept)|$(field "$r" actual_route)" = "shadow|low_confidence|False|terra_low" ]' "$r"
 r=$(FABLE_IMAJEV_MIN_CONFIDENCE=0.4 dual off shadow "$MIDDLE")
-check "FABLE_IMAJEV_MIN_CONFIDENCE only moves would_accept" '[ "$(field "$r" imajev_would_accept)|$(field "$r" actual_route)" = "True|luna_high" ]' "$r"
-imajev_says '{"choice":"luna_high","conf":0.97,"abstained":true,"unknown":0.6}'
+check "FABLE_IMAJEV_MIN_CONFIDENCE only moves would_accept" '[ "$(field "$r" imajev_would_accept)|$(field "$r" actual_route)" = "True|terra_low" ]' "$r"
+imajev_says '{"choice":"terra_low","conf":0.97,"abstained":true,"unknown":0.6}'
 r=$(dual off shadow "$MIDDLE")
-check "abstained: shadow, reason abstained, would_accept false, choice and unknown kept, route unchanged" '[ "$(field "$r" imajev_status)|$(field "$r" imajev_reason)|$(field "$r" imajev_would_accept)|$(field "$r" imajev_abstained)|$(field "$r" imajev_unknown_probability)|$(field "$r" imajev_route)|$(field "$r" actual_route)" = "shadow|abstained|False|True|0.6|luna_high|luna_high" ]' "$r"
+check "abstained: shadow, reason abstained, would_accept false, choice and unknown kept, route unchanged" '[ "$(field "$r" imajev_status)|$(field "$r" imajev_reason)|$(field "$r" imajev_would_accept)|$(field "$r" imajev_abstained)|$(field "$r" imajev_unknown_probability)|$(field "$r" imajev_route)|$(field "$r" actual_route)" = "shadow|abstained|False|True|0.6|terra_low|terra_low" ]' "$r"
 reset_imajev
 r=$(dual off shadow '{"file_count":1,"mechanical":true,"verification_available":true}')
 check "obvious case: Imajev skipped too, never contacted" '[ "$(field "$r" imajev_status)|$(field "$r" actual_route)" = "skipped|luna_low" ] && [ ! -e "$STUB_IMAJEV_MARK" ] && ! grep -q imajev_input <<<"$r"' "$r"
 r=$(dual shadow shadow '{"file_count":3,"prior_failures":2,"verification_available":true}')
 check "hard rule (two failures): both skipped, neither contacted" '[ "$(field "$r" jev_status)|$(field "$r" imajev_status)|$(field "$r" actual_route)" = "skipped|skipped|claude_opus_high" ] && [ ! -e "$STUB_IMAJEV_MARK" ] && [ ! -e "$STUB_JEV_MARK" ]' "$r"
-r=$(dual shadow shadow "$MIDDLE" --route sol_high)
-check "caller override: neither model is asked, as before" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)" = "sol_high|caller" ] && [ -z "$(field "$r" imajev_status)" ] && [ ! -e "$STUB_IMAJEV_MARK" ]' "$r"
+r=$(dual shadow shadow '{"file_count":4,"multi_component":true,"verification_available":true,"prior_failures":1}' --route sol_medium)
+check "caller override: neither model is asked, as before" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)" = "sol_medium|caller" ] && [ -z "$(field "$r" imajev_status)" ] && [ ! -e "$STUB_IMAJEV_MARK" ]' "$r"
 
 echo "Imajev shadow: Jev and Imajev get the same decision"
-reset_jev; reset_imajev; export STUB_CHOICE=luna_high STUB_CONF=0.9
+reset_jev; reset_imajev; export STUB_CHOICE=terra_low STUB_CONF=0.9
 long=$(python3 -c 'print("x"*2000)')
 r=$(dual shadow shadow "{\"objective\":\"$long\",\"file_count\":4,\"verification_available\":true,\"diff\":\"SECRET_DIFF\",\"context_bound\":false,\"strict_scope\":true,\"opus_failed\":false}")
 row=$(last_line)
@@ -500,7 +521,7 @@ check "unknown keys and rule-only flags never reach Imajev" '! grep -qE "SECRET_
 check "objective truncated to 280 for Imajev as for Jev" 'python3 -c "import json,sys; assert len(json.loads(sys.argv[1])[\"state\"][\"objective\"])==280" "$sent"' "$sent"
 reset_jev; reset_imajev
 r=$(dual shadow shadow '{"file_count":4,"interface_change":true,"verification_available":true}')
-check "interface_change floor skips Jev and Imajev as a single option" '[ "$(field "$r" jev_status)|$(field "$r" imajev_status)|$(field "$r" skip_reason)|$(field "$r" actual_route)|$(field "$r" decided_by)" = "skipped|skipped|single_option|luna_high|legacy" ] && [ ! -e "$STUB_JEV_MARK" ] && [ ! -e "$STUB_IMAJEV_MARK" ]' "$r"
+check "interface_change floor skips Jev and Imajev as a single option" '[ "$(field "$r" jev_status)|$(field "$r" imajev_status)|$(field "$r" skip_reason)|$(field "$r" actual_route)|$(field "$r" decided_by)" = "skipped|skipped|single_option|terra_low|legacy" ] && [ ! -e "$STUB_JEV_MARK" ] && [ ! -e "$STUB_IMAJEV_MARK" ]' "$r"
 check "the 2 KB state cap is the same for both adapters, and an oversized state never leaves the process" 'python3 -c "
 import sys,os; sys.path.insert(0,\"$S\"); sys.dont_write_bytecode=True
 import jev_route, imajev_route
@@ -508,17 +529,17 @@ assert imajev_route.STATE_MAX_BYTES==jev_route.STATE_MAX_BYTES==2048
 r=imajev_route.classify(\"q\", {\"objective\": \"x\"*3000}, {\"a\":\"A\",\"b\":\"B\"}, 2)
 assert r[\"ok\"] is False and r[\"reason\"]==\"state_too_large\", r
 " && [ ! -e "$STUB_IMAJEV_MARK" ]' "$(cat "$STUB_IMAJEV_MARK" 2>/dev/null)"
-reset_jev; reset_imajev; export STUB_CHOICE=luna_max STUB_CONF=0.9; imajev_says '{"choice":"claude_opus_high","conf":0.88}'
+reset_jev; reset_imajev; export STUB_CHOICE=terra_medium STUB_CONF=0.9; imajev_says '{"choice":"claude_opus_high","conf":0.88}'
 r=$(dual shadow shadow "$NARROW")
-check "after one failure both are offered the same four routes (luna_max eligible)" 'same_decision "$(last_line)" && [ "$(offered)" = "luna_high luna_max sol_high claude_opus_high" ]' "$(offered)"
-check "dual shadow: one decision id carries both answers; the route stays deterministic" '[ "$(field "$r" jev_route)|$(field "$r" imajev_route)|$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" policy_version)" = "luna_max|claude_opus_high|luna_high|legacy|5.7.0" ] && [ "$(grep -c "\"id\":\"$(field "$r" id)\"" "$FABLE_LEDGER")" -eq 1 ]' "$r"
+check "after one failure both are offered the same four routes (terra_medium eligible)" 'same_decision "$(last_line)" && [ "$(offered)" = "terra_low terra_medium sol_medium claude_opus_high" ]' "$(offered)"
+check "dual shadow: one decision id carries both answers; the route stays deterministic" '[ "$(field "$r" jev_route)|$(field "$r" imajev_route)|$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" policy_version)" = "terra_medium|claude_opus_high|terra_low|legacy|5.9.0" ] && [ "$(grep -c "\"id\":\"$(field "$r" id)\"" "$FABLE_LEDGER")" -eq 1 ]' "$r"
 
 echo "Imajev shadow: failures cost only Imajev's answer"
-reset_jev; export STUB_CHOICE=luna_high STUB_CONF=0.9
+reset_jev; export STUB_CHOICE=terra_low STUB_CONF=0.9
 fails() {  # fails <label> <expected reason> [env assignments...]: Imajev fails, Jev is recorded, route unchanged
   local label=$1 want=$2; shift 2
   local out; out=$(env "$@" FABLE_JEV_MODE=shadow FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" route <<<"$MIDDLE" 2>"$T/stderr")
-  check "Imajev $label -> fallback $want; Jev recorded; route unchanged" '[ "$(field "$out" imajev_status)|$(field "$out" imajev_reason)|$(field "$out" jev_status)|$(field "$out" jev_route)|$(field "$out" actual_route)|$(field "$out" decided_by)" = "fallback|$want|shadow|luna_high|luna_high|legacy" ]' "$out"
+  check "Imajev $label -> fallback $want; Jev recorded; route unchanged" '[ "$(field "$out" imajev_status)|$(field "$out" imajev_reason)|$(field "$out" jev_status)|$(field "$out" jev_route)|$(field "$out" actual_route)|$(field "$out" decided_by)" = "fallback|$want|shadow|terra_low|terra_low|legacy" ]' "$out"
   last_fail=$out
 }
 reset_imajev; fails "server unavailable" unavailable FABLE_IMAJEV_URL="$DEAD_URL"
@@ -539,29 +560,29 @@ check "unknown choice: the off-list answer stays visible" '[ "$(field "$last_fai
 reset_imajev; fails "wrong path" http_404 FABLE_IMAJEV_URL="${IMAJEV_URL%/v1/systemone}/v1/other"
 fails "invalid URL" invalid_url FABLE_IMAJEV_URL="ftp://127.0.0.1/x"
 fails "adapter exception (unparsable URL)" adapter_error FABLE_IMAJEV_URL="http://[::1"
-reset_jev; reset_imajev; imajev_says '{"choice":"luna_high","conf":0.9}'
+reset_jev; reset_imajev; imajev_says '{"choice":"terra_low","conf":0.9}'
 r=$(STUB_JEV=malformed dual shadow shadow "$MIDDLE")
-check "Jev fails, Imajev answers: Jev fallback, Imajev recorded, route unchanged" '[ "$(field "$r" jev_status)|$(field "$r" jev_reason)|$(field "$r" imajev_status)|$(field "$r" imajev_route)|$(field "$r" actual_route)" = "fallback|malformed|shadow|luna_high|luna_high" ]' "$r"
+check "Jev fails, Imajev answers: Jev fallback, Imajev recorded, route unchanged" '[ "$(field "$r" jev_status)|$(field "$r" jev_reason)|$(field "$r" imajev_status)|$(field "$r" imajev_route)|$(field "$r" actual_route)" = "fallback|malformed|shadow|terra_low|terra_low" ]' "$r"
 r=$(PATH="$BASE" FABLE_IMAJEV_URL="$DEAD_URL" dual shadow shadow "$MIDDLE")
-check "both fail: deterministic route, as before" '[ "$(field "$r" jev_reason)|$(field "$r" imajev_reason)|$(field "$r" actual_route)|$(field "$r" decided_by)" = "executable_missing|unavailable|luna_high|legacy" ]' "$r"
+check "both fail: deterministic route, as before" '[ "$(field "$r" jev_reason)|$(field "$r" imajev_reason)|$(field "$r" actual_route)|$(field "$r" decided_by)" = "executable_missing|unavailable|terra_low|legacy" ]' "$r"
 
 echo "Imajev shadow: concurrent with Jev"
-reset_jev; reset_imajev; export STUB_CHOICE=luna_high STUB_CONF=0.9; imajev_says '{"delay":1.5,"choice":"luna_low"}'
+reset_jev; reset_imajev; export STUB_CHOICE=terra_low STUB_CONF=0.9; imajev_says '{"delay":1.5,"choice":"luna_low"}'
 t0=$(python3 -c 'import time; print(time.time())')
 r=$(STUB_JEV_DELAY=1.5 dual shadow shadow "$MIDDLE")
 t1=$(python3 -c 'import time; print(time.time())')
-check "Jev 1.5 s + Imajev 1.5 s cost about 1.5 s, not 3 s; both answers logged" 'python3 -c "import sys; sys.exit(0 if float(sys.argv[2])-float(sys.argv[1]) < 2.7 else 1)" "$t0" "$t1" && [ "$(field "$r" jev_route)|$(field "$r" imajev_route)" = "luna_high|luna_low" ]' "$t0 $t1 $r"
+check "Jev 1.5 s + Imajev 1.5 s cost about 1.5 s, not 3 s; both answers logged" 'python3 -c "import sys; sys.exit(0 if float(sys.argv[2])-float(sys.argv[1]) < 2.7 else 1)" "$t0" "$t1" && [ "$(field "$r" jev_route)|$(field "$r" imajev_route)" = "terra_low|luna_low" ]' "$t0 $t1 $r"
 
 echo "Imajev shadow: Jev active behaves exactly as before"
-reset_jev; reset_imajev; export STUB_CHOICE=luna_low STUB_CONF=0.91; imajev_says '{"choice":"luna_high","conf":0.99}'
+reset_jev; reset_imajev; export STUB_CHOICE=luna_low STUB_CONF=0.91; imajev_says '{"choice":"terra_low","conf":0.99}'
 a=$(route active "$MIDDLE"); b=$(dual active shadow "$MIDDLE")
 jev_view() {  # everything Jev decides or logs, minus its latency
   python3 -c 'import json,sys; r=json.loads(sys.argv[1]); keep=("actual_route","decided_by","model","effort","legacy_route","floor","rule")
 print(json.dumps({k: v for k, v in r.items() if (k.startswith("jev_") and k != "jev_latency_ms") or k in keep}, sort_keys=True))' "$1"
 }
-check "active Jev + Imajev shadow: same Jev fields, same adopted route as without Imajev" '[ "$(jev_view "$a")" = "$(jev_view "$b")" ] && [ "$(field "$b" actual_route)|$(field "$b" decided_by)|$(field "$b" imajev_route)" = "luna_low|jev|luna_high" ]' "$a // $b"
+check "active Jev + Imajev shadow: same Jev fields, same adopted route as without Imajev" '[ "$(jev_view "$a")" = "$(jev_view "$b")" ] && [ "$(field "$b" actual_route)|$(field "$b" decided_by)|$(field "$b" imajev_route)" = "luna_low|jev|terra_low" ]' "$a // $b"
 r=$(STUB_CONF=0.5 dual active shadow "$MIDDLE")
-check "active Jev unsure + Imajev confident (0.99): deterministic route, Imajev never adopted" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" jev_reason)|$(field "$r" imajev_would_accept)" = "luna_high|legacy|low_confidence|True" ]' "$r"
+check "active Jev unsure + Imajev confident (0.99): deterministic route, Imajev never adopted" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" jev_reason)|$(field "$r" imajev_would_accept)" = "terra_low|legacy|low_confidence|True" ]' "$r"
 r=$(FABLE_IMAJEV_URL="$DEAD_URL" dual active shadow "$MIDDLE")
 check "active Jev with Imajev down: Jev still adopted" '[ "$(field "$r" actual_route)|$(field "$r" decided_by)|$(field "$r" imajev_reason)" = "luna_low|jev|unavailable" ]' "$r"
 
@@ -580,38 +601,38 @@ check "Imajev cannot even propose fable_review: unknown_choice" '[ "$(field "$v"
 reset_jev; reset_imajev
 v=$(review2 shadow shadow '{"file_count":3,"security_sensitive":true,"verification_passed":true}')
 check "obvious review: both skipped, neither contacted" '[ "$(field "$v" jev_status)|$(field "$v" imajev_status)|$(field "$v" review)" = "skipped|skipped|opus_review" ] && [ ! -e "$STUB_IMAJEV_MARK" ] && [ ! -e "$STUB_JEV_MARK" ]' "$v"
-export STUB_CHOICE=luna_low STUB_CONF=0.91; imajev_says '{"choice":"luna_high"}'
+export STUB_CHOICE=luna_low STUB_CONF=0.91; imajev_says '{"choice":"terra_low"}'
 r=$(dual shadow shadow "$MIDDLE"); id=$(field "$r" id)
 imajev_says '{"choice":"opus_review"}'
 review2 shadow shadow '{"file_count":4,"lines_changed":300,"verification_passed":true}' "$id" >/dev/null
 o=$(python3 "$S/fable-route.py" outcome --id "$id" --outcome success)
-check "outcome carries the decision's imajev_* and the review's as review_imajev_*" '[ "$(field "$o" imajev_route)|$(field "$o" jev_route)|$(field "$o" review_imajev_route)|$(field "$o" review_jev_route)" = "luna_high|luna_low|opus_review|luna_low" ]' "$o"
+check "outcome carries the decision's imajev_* and the review's as review_imajev_*" '[ "$(field "$o" imajev_route)|$(field "$o" jev_route)|$(field "$o" review_imajev_route)|$(field "$o" review_jev_route)" = "terra_low|luna_low|opus_review|luna_low" ]' "$o"
 
 echo "Imajev shadow: backfill"
-reset_jev; reset_imajev; export STUB_CHOICE=luna_high STUB_CONF=0.9; imajev_says '{"choice":"luna_high","conf":0.95}'
-b=$(FABLE_JEV_MODE=shadow FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" backfill --model gpt-6-luna --effort max --file-count 4 --objective "Tidy helpers" --verification)
-check "backfill: both answers logged beside the observed route; backfilled/decided_by unchanged" '[ "$(field "$b" backfilled)|$(field "$b" decided_by)|$(field "$b" actual_route)|$(field "$b" jev_route)|$(field "$b" imajev_route)" = "True|lane|luna_max|luna_high|luna_high" ] && same_decision "$b"' "$b"
-b=$(FABLE_JEV_MODE=active FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" backfill --model gpt-6-luna --effort high --file-count 4)
-check "backfill with a single eligible route skips both models" '[ "$(field "$b" jev_status)|$(field "$b" imajev_status)|$(field "$b" skip_reason)|$(field "$b" actual_route)" = "skipped|skipped|single_option|luna_high" ]' "$b"
+reset_jev; reset_imajev; export STUB_CHOICE=terra_low STUB_CONF=0.9; imajev_says '{"choice":"terra_low","conf":0.95}'
+b=$(FABLE_JEV_MODE=shadow FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" backfill --model gpt-6.1-terra --effort medium --file-count 4 --objective "Tidy helpers" --verification)
+check "backfill: both answers logged beside the observed route; backfilled/decided_by unchanged" '[ "$(field "$b" backfilled)|$(field "$b" decided_by)|$(field "$b" actual_route)|$(field "$b" jev_route)|$(field "$b" imajev_route)" = "True|lane|terra_medium|terra_low|terra_low" ] && same_decision "$b"' "$b"
+b=$(FABLE_JEV_MODE=active FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" backfill --model gpt-6.1-terra --effort low --file-count 4)
+check "backfill with a single eligible route skips both models" '[ "$(field "$b" jev_status)|$(field "$b" imajev_status)|$(field "$b" skip_reason)|$(field "$b" actual_route)" = "skipped|skipped|single_option|terra_low" ]' "$b"
 b=$(FABLE_JEV_MODE=off FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" backfill --model gpt-6-luna --effort low --file-count 1 --verification)
 check "backfill with Jev off: Imajev alone is logged, no jev_* answer" '[ "$(field "$b" imajev_status)|$(field "$b" actual_route)|$(field "$b" jev_mode)" = "shadow|luna_low|off" ] && ! grep -qE "\"jev_(status|route|input)\"" <<<"$b"' "$b"
 reset_jev; reset_imajev
-b=$(FABLE_JEV_MODE=shadow FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" backfill --model gpt-6-luna --effort high --file-count 4)
-check "backfill with luna_high floor skips both models as single_option" '[ "$(field "$b" jev_status)|$(field "$b" imajev_status)|$(field "$b" skip_reason)|$(field "$b" actual_route)|$(field "$b" decided_by)" = "skipped|skipped|single_option|luna_high|lane" ] && [ ! -e "$STUB_JEV_MARK" ] && [ ! -e "$STUB_IMAJEV_MARK" ]' "$b"
+b=$(FABLE_JEV_MODE=shadow FABLE_IMAJEV_MODE=shadow python3 "$S/fable-route.py" backfill --model gpt-6.1-terra --effort low --file-count 4)
+check "backfill with Terra low floor skips both models as single_option" '[ "$(field "$b" jev_status)|$(field "$b" imajev_status)|$(field "$b" skip_reason)|$(field "$b" actual_route)|$(field "$b" decided_by)" = "skipped|skipped|single_option|terra_low|lane" ] && [ ! -e "$STUB_JEV_MARK" ] && [ ! -e "$STUB_IMAJEV_MARK" ]' "$b"
 
 echo "Imajev shadow: report"
 H2H="$T/h2h.jsonl"
-{ D='"event":"decision","policy_version":"5.7.0","jev_mode":"shadow","imajev_mode":"shadow","legacy_route":"luna_high","actual_route":"luna_high"'
-  echo "{$D,\"id\":\"h1\",\"jev_status\":\"shadow\",\"jev_route\":\"luna_high\",\"jev_confidence\":0.9,\"jev_latency_ms\":400,\"jev_would_accept\":true,\"jev_input\":{\"file_count\":4,\"multi_component\":true},\"imajev_status\":\"shadow\",\"imajev_route\":\"sol_high\",\"imajev_confidence\":0.85,\"imajev_latency_ms\":100,\"imajev_would_accept\":true,\"imajev_abstained\":false,\"imajev_unknown_probability\":0.02,\"imajev_probabilities\":{\"luna_high\":0.1,\"sol_high\":0.88,\"luna_low\":0.02},\"imajev_input\":{\"file_count\":4,\"multi_component\":true},\"imajev_experiment_tag\":\"mlx-4b-rot4-cal\",\"imajev_model\":\"imajev-4b\"}"
-  echo '{"event":"attempt","id":"h1","policy_version":"5.7.0","lane_status":"ok","duration_s":100,"model":"gpt-6-luna","effort":"high"}'
-  echo '{"event":"outcome","id":"h1","policy_version":"5.7.0","actual_route":"luna_high","jev_status":"shadow","jev_route":"luna_high","imajev_status":"shadow","imajev_route":"sol_high","outcome":"success","attempts":1}'
-  echo "{$D,\"id\":\"h2\",\"jev_status\":\"shadow\",\"jev_route\":\"luna_high\",\"jev_confidence\":0.95,\"jev_latency_ms\":300,\"jev_input\":{\"file_count\":2},\"imajev_status\":\"shadow\",\"imajev_route\":\"luna_high\",\"imajev_confidence\":0.95,\"imajev_latency_ms\":200,\"imajev_would_accept\":true,\"imajev_abstained\":false,\"imajev_unknown_probability\":0.01,\"imajev_input\":{\"file_count\":2},\"imajev_experiment_tag\":\"mlx-4b-rot4-cal\"}"
-  echo "{$D,\"id\":\"h3\",\"jev_status\":\"shadow\",\"jev_route\":\"sol_high\",\"jev_confidence\":0.8,\"jev_latency_ms\":600,\"jev_input\":{\"file_count\":2},\"imajev_status\":\"shadow\",\"imajev_reason\":\"abstained\",\"imajev_route\":\"luna_high\",\"imajev_confidence\":0.3,\"imajev_latency_ms\":150,\"imajev_would_accept\":false,\"imajev_abstained\":true,\"imajev_unknown_probability\":0.7,\"imajev_input\":{\"file_count\":2},\"imajev_experiment_tag\":\"mlx-4b-rot1-cal\"}"
+{ D='"event":"decision","policy_version":"5.9.0","jev_mode":"shadow","imajev_mode":"shadow","legacy_route":"terra_low","actual_route":"terra_low"'
+  echo "{$D,\"id\":\"h1\",\"jev_status\":\"shadow\",\"jev_route\":\"terra_low\",\"jev_confidence\":0.9,\"jev_latency_ms\":400,\"jev_would_accept\":true,\"jev_input\":{\"file_count\":4,\"multi_component\":true},\"imajev_status\":\"shadow\",\"imajev_route\":\"sol_medium\",\"imajev_confidence\":0.85,\"imajev_latency_ms\":100,\"imajev_would_accept\":true,\"imajev_abstained\":false,\"imajev_unknown_probability\":0.02,\"imajev_probabilities\":{\"terra_low\":0.1,\"sol_medium\":0.88,\"luna_low\":0.02},\"imajev_input\":{\"file_count\":4,\"multi_component\":true},\"imajev_experiment_tag\":\"mlx-4b-rot4-cal\",\"imajev_model\":\"imajev-4b\"}"
+  echo '{"event":"attempt","id":"h1","policy_version":"5.9.0","lane_status":"ok","duration_s":100,"model":"gpt-6-luna","effort":"high"}'
+  echo '{"event":"outcome","id":"h1","policy_version":"5.9.0","actual_route":"terra_low","jev_status":"shadow","jev_route":"terra_low","imajev_status":"shadow","imajev_route":"sol_medium","outcome":"success","attempts":1}'
+  echo "{$D,\"id\":\"h2\",\"jev_status\":\"shadow\",\"jev_route\":\"terra_low\",\"jev_confidence\":0.95,\"jev_latency_ms\":300,\"jev_input\":{\"file_count\":2},\"imajev_status\":\"shadow\",\"imajev_route\":\"terra_low\",\"imajev_confidence\":0.95,\"imajev_latency_ms\":200,\"imajev_would_accept\":true,\"imajev_abstained\":false,\"imajev_unknown_probability\":0.01,\"imajev_input\":{\"file_count\":2},\"imajev_experiment_tag\":\"mlx-4b-rot4-cal\"}"
+  echo "{$D,\"id\":\"h3\",\"jev_status\":\"shadow\",\"jev_route\":\"sol_medium\",\"jev_confidence\":0.8,\"jev_latency_ms\":600,\"jev_input\":{\"file_count\":2},\"imajev_status\":\"shadow\",\"imajev_reason\":\"abstained\",\"imajev_route\":\"terra_low\",\"imajev_confidence\":0.3,\"imajev_latency_ms\":150,\"imajev_would_accept\":false,\"imajev_abstained\":true,\"imajev_unknown_probability\":0.7,\"imajev_input\":{\"file_count\":2},\"imajev_experiment_tag\":\"mlx-4b-rot1-cal\"}"
   echo "{$D,\"id\":\"h4\",\"backfilled\":true,\"jev_status\":\"fallback\",\"jev_reason\":\"timeout\",\"imajev_status\":\"shadow\",\"imajev_route\":\"luna_low\",\"imajev_confidence\":0.9,\"imajev_latency_ms\":90,\"imajev_would_accept\":true,\"imajev_abstained\":false}"
-  echo "{$D,\"id\":\"h5\",\"jev_status\":\"shadow\",\"jev_route\":\"luna_high\",\"jev_confidence\":0.9,\"jev_latency_ms\":350,\"imajev_status\":\"fallback\",\"imajev_reason\":\"unavailable\",\"imajev_latency_ms\":2}"
+  echo "{$D,\"id\":\"h5\",\"jev_status\":\"shadow\",\"jev_route\":\"terra_low\",\"jev_confidence\":0.9,\"jev_latency_ms\":350,\"imajev_status\":\"fallback\",\"imajev_reason\":\"unavailable\",\"imajev_latency_ms\":2}"
   echo "{$D,\"id\":\"h6\",\"jev_status\":\"skipped\",\"imajev_status\":\"skipped\"}"
-  echo '{"event":"review","id":"h1","policy_version":"5.7.0","legacy_review":"self_review","review":"self_review","jev_status":"shadow","jev_route":"self_review","imajev_status":"shadow","imajev_route":"opus_review","imajev_confidence":0.9}'
-  echo '{"event":"decision","id":"o1","policy_version":"5.4.0","legacy_route":"luna_high","actual_route":"luna_high","jev_status":"shadow","jev_route":"luna_high","imajev_status":"shadow","imajev_route":"sol_high","imajev_confidence":0.9}'
+  echo '{"event":"review","id":"h1","policy_version":"5.9.0","legacy_review":"self_review","review":"self_review","jev_status":"shadow","jev_route":"self_review","imajev_status":"shadow","imajev_route":"opus_review","imajev_confidence":0.9}'
+  echo '{"event":"decision","id":"o1","policy_version":"5.4.0","legacy_route":"terra_low","actual_route":"terra_low","jev_status":"shadow","jev_route":"terra_low","imajev_status":"shadow","imajev_route":"sol_medium","imajev_confidence":0.9}'
 } > "$H2H"
 rep=$(python3 "$S/routing-report.py" --ledger "$H2H" --json 2>&1); rc=$?
 check "report reads Imajev rows" '[ $rc -eq 0 ]' "$rep"
@@ -624,23 +645,23 @@ check "imajev block: consulted, responses, fallbacks, distribution, agreement, c
 import json,sys; i=json.loads(sys.argv[1])[\"current_policy\"][\"imajev\"]
 assert i[\"consulted\"]==5 and i[\"successful_responses\"]==4 and i[\"skipped_obvious\"]==1 and i[\"consulted_on_backfill\"]==1, i
 assert i[\"fallback_reasons\"]=={\"unavailable\":1} and i[\"shadow_reasons\"]=={\"abstained\":1}, i
-assert i[\"imajev_recommendation_distribution\"]=={\"sol_high\":1,\"luna_high\":2,\"luna_low\":1}, i
+assert i[\"imajev_recommendation_distribution\"]=={\"sol_medium\":1,\"terra_low\":2,\"luna_low\":1}, i
 assert i[\"agreement_with_legacy\"]==0.5 and i[\"would_accept_in_active\"]==0.75 and i[\"abstain_rate\"]==0.25, i
 assert i[\"avg_latency_ms\"]==135.0 and i[\"avg_confidence\"]==0.75 and i[\"avg_unknown_probability\"]==0.24, i
 assert i[\"avg_top2_margin\"]==0.78 and sum(b[\"n\"] for b in i[\"confidence_buckets\"])==4, i
-assert i[\"recommendation_by_input\"][\"multi_component\"][\"true\"]=={\"sol_high\":1}, i
+assert i[\"recommendation_by_input\"][\"multi_component\"][\"true\"]=={\"sol_medium\":1}, i
 assert set(i[\"by_experiment_tag\"])=={\"mlx-4b-rot4-cal\",\"mlx-4b-rot1-cal\",\"(untagged)\"} and i[\"by_experiment_tag\"][\"mlx-4b-rot4-cal\"][\"agreement_with_jev\"]==0.5, i
-assert i[\"shadow_disagreement_lanes\"][\"imajev=sol_high ran=luna_high\"][\"first_try_ok\"]==1.0, i
-assert i[\"shadow_disagreement_outcomes\"][\"imajev=sol_high ran=luna_high\"][\"success_rate\"]==1.0, i
+assert i[\"shadow_disagreement_lanes\"][\"imajev=sol_medium ran=terra_low\"][\"first_try_ok\"]==1.0, i
+assert i[\"shadow_disagreement_outcomes\"][\"imajev=sol_medium ran=terra_low\"][\"success_rate\"]==1.0, i
 " "$rep"' "$rep"
 check "head-to-head: both consulted/answered, agreement, pairs, latency, confidence, abstain, one-sided answers" 'python3 -c "
 import json,sys; c=json.loads(sys.argv[1])[\"current_policy\"][\"decision_model_comparison\"]
 assert c[\"both_consulted\"]==5 and c[\"both_answered\"]==3 and c[\"same_recommendation\"]==1 and c[\"different_recommendation\"]==2, c
-assert c[\"agreement_rate\"]==0.333 and c[\"route_pairs\"]=={\"jev=luna_high imajev=sol_high\":1,\"jev=luna_high imajev=luna_high\":1,\"jev=sol_high imajev=luna_high\":1}, c
+assert c[\"agreement_rate\"]==0.333 and c[\"route_pairs\"]=={\"jev=terra_low imajev=sol_medium\":1,\"jev=terra_low imajev=terra_low\":1,\"jev=sol_medium imajev=terra_low\":1}, c
 assert c[\"avg_latency_ms\"]=={\"jev\":433.33,\"imajev\":150.0} and c[\"avg_confidence\"]=={\"jev\":0.88,\"imajev\":0.7}, c
 assert c[\"imajev_abstain_rate\"]==0.333 and c[\"only_jev_answered\"]==1 and c[\"only_imajev_answered\"]==1, c
 assert c[\"agreement_by_input\"][\"file_count\"][\"2-3\"]=={\"n\":2,\"agreement_rate\":0.5}, c
-assert c[\"disagreement_evidence\"][\"jev=luna_high imajev=sol_high ran=luna_high\"]=={\"n\":1,\"lane_first_try_ok\":1.0,\"outcome_success_rate\":1.0}, c
+assert c[\"disagreement_evidence\"][\"jev=terra_low imajev=sol_medium ran=terra_low\"]=={\"n\":1,\"lane_first_try_ok\":1.0,\"outcome_success_rate\":1.0}, c
 assert \"ran=\" in c[\"note\"]
 " "$rep"' "$rep"
 check "no accuracy is claimed for either model anywhere in the report" '! grep -qi accuracy <<<"$rep"'
@@ -689,8 +710,8 @@ before=$(snap)
 out=$("$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" 2>/dev/null); rc=$?
 wt=$(awk '/worktree:/{print $2; exit}' <<<"$out")
 check "lane succeeds (rc 0)" '[ $rc -eq 0 ]' "$out"
-check "default: --model gpt-6-luna, effort high" 'argv_has gpt-6-luna && argv_has model_reasoning_effort=high'
-check "LANE REPORT names model and effort" 'grep -q "model:    gpt-6-luna" <<<"$out" && grep -q "effort:   high" <<<"$out"'
+check "default: --model gpt-6.1-terra, effort low" 'argv_has gpt-6.1-terra && argv_has model_reasoning_effort=low'
+check "LANE REPORT names model and effort" 'grep -q "model:    gpt-6.1-terra" <<<"$out" && grep -q "effort:   low" <<<"$out"'
 check "codex ran in the worktree, not the repo" 'argv_has "$wt" && ! argv_has "$REPO"'
 check "main tree untouched until apply (incl. uncommitted work)" '[ "$(snap)" = "$before" ]'
 check "transcript goes to a log; only a tail is replayed" 'grep -q "log: " <<<"$out" && [ -f "$wt.codex-stderr.log" ]'
@@ -700,11 +721,11 @@ check "apply --remove also removes the transcript log" '[ ! -e "$wt" ] && [ ! -e
 check "co-resident uncommitted work survives" 'grep -q "OTHER LANE UNCOMMITTED WORK" "$REPO/docs/README.md"'
 
 rm -f "${STUB_ARGV_DIR:?}"/*
-rmx=$(route off '{"file_count":1,"verification_available":true,"prior_failures":1}' --route luna_max)
+rmx=$(route off '{"file_count":1,"verification_available":true,"prior_failures":1}' --route terra_medium)
 spec src/maxed.py "$T/spec-max"
 out=$("$S/codex-lane.sh" --spec "$T/spec-max" --files src/maxed.py --repo "$REPO" --model "$(field "$rmx" model)" --effort "$(field "$rmx" effort)" --route-id "$(field "$rmx" id)" 2>/dev/null); rc=$?
 a=$(grep "\"id\":\"$(field "$rmx" id)\"" "$FABLE_LEDGER" | grep '"event":"attempt"' | tail -n 1)
-check "luna_max lane: codex gets --model gpt-6-luna and effort max, attempt row says so" '[ $rc -eq 0 ] && argv_has gpt-6-luna && argv_has model_reasoning_effort=max && [ "$(field "$a" model)/$(field "$a" effort)" = gpt-6-luna/max ]' "$out $a"
+check "terra_medium lane: codex gets --model gpt-6.1-terra and effort medium, attempt row says so" '[ $rc -eq 0 ] && argv_has gpt-6.1-terra && argv_has model_reasoning_effort=medium && [ "$(field "$a" model)/$(field "$a" effort)" = gpt-6.1-terra/medium ]' "$out $a"
 discard "$out"
 rm -f "$STUB_ARGV_DIR"/*
 out=$("$S/codex-lane.sh" --spec "$T/spec1" --files src/calc.py --repo "$REPO" --model gpt-6-sol --effort xhigh 2>/dev/null)
@@ -755,7 +776,7 @@ a=$(att 1)
 check "an unavailable run is recorded with its reason" '[ "$(field "$a" lane_status)/$(field "$a" attempt)" = unavailable/1 ] && grep -q "usage limit" <<<"$(field "$a" reason)"' "$a"
 out=$("$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" --route-id "$rid" 2>/dev/null)
 a=$(att 2)
-check "a successful run is recorded: status, attempt no., model, effort, touched" '[ "$(field "$a" lane_status)|$(field "$a" attempt)|$(field "$a" model)|$(field "$a" effort)|$(field "$a" touched)|$(field "$a" scope_violations)" = "ok|2|gpt-6-luna|high|1|0" ] && [ -n "$(field "$a" duration_s)" ]' "$a"
+check "a successful run is recorded: status, attempt no., model, effort, touched" '[ "$(field "$a" lane_status)|$(field "$a" attempt)|$(field "$a" model)|$(field "$a" effort)|$(field "$a" touched)|$(field "$a" scope_violations)" = "ok|2|gpt-6.1-terra|low|1|0" ] && [ -n "$(field "$a" duration_s)" ]' "$a"
 check "recording does not change the lane report or exit" 'grep -q "LANE REPORT" <<<"$out" && ! grep -q "\"event\"" <<<"$out"' "$out"
 discard "$out"
 "$S/codex-lane.sh" --spec "$T/spec-mul" --files src/mul.py --repo "$REPO" --route-id "$rid" --effort ultra >/dev/null 2>&1
@@ -781,15 +802,23 @@ o=$(python3 "$S/fable-route.py" outcome --id "$rid" --outcome success)
 check "outcome fills attempts and duration from lane rows" '[ "$(field "$o" attempts)" = 4 ] && [ -n "$(field "$o" duration_s)" ]' "$o"
 rep=$(python3 "$S/routing-report.py" --json)
 check "report shows lane attempts per route and shadow disagreements from lanes" 'python3 -c "
-import json,sys; d=json.loads(sys.argv[1])[\"current_policy\"]; l=d[\"lane_attempts\"][\"by_route\"][\"luna_high\"]
+import json,sys; d=json.loads(sys.argv[1])[\"current_policy\"]; l=d[\"lane_attempts\"][\"by_route\"][\"terra_low\"]
 assert l[\"n\"]>=1 and l[\"avg_attempts\"]>=1, l
-assert any(k.startswith(\"jev=luna_low ran=luna_high\") for k in d[\"shadow_disagreement_lanes\"]), d[\"shadow_disagreement_lanes\"]
+assert any(k.startswith(\"jev=luna_low ran=terra_low\") for k in d[\"shadow_disagreement_lanes\"]), d[\"shadow_disagreement_lanes\"]
 " "$rep"' "$rep"
 check "report shows compliance: routed rate, unrouted runs, outcome rates, open decisions" 'python3 -c "
 import json,sys; c=json.loads(sys.argv[1])[\"current_policy\"][\"compliance\"]
 assert c[\"unrouted_lane_runs\"]>=1 and 0<c[\"routed_lane_run_rate\"]<1, c
 assert c[\"outcome_rate\"] is not None and c[\"outcome_rate_codex_routes\"] is not None, c
 assert c[\"codex_decisions_without_lane_run\"]>=1 and c[\"open_decisions_recent\"], c
+" "$rep"' "$rep"
+
+ALIAS_REPORT="$T/route-aliases.jsonl"
+printf '%s\n' '{"event":"decision","policy_version":"5.9.0","actual_route":"sol_high"}' '{"event":"decision","policy_version":"5.9.0","actual_route":"sol_medium"}' '{"event":"decision","policy_version":"5.9.0","actual_route":"luna_max"}' '{"event":"decision","policy_version":"5.9.0","actual_route":"luna_high"}' > "$ALIAS_REPORT"
+rep=$(python3 "$S/routing-report.py" --ledger "$ALIAS_REPORT" --json)
+check "report folds sol_high into sol_medium and preserves old luna_max and luna_high rows" 'python3 -c "
+import json,sys; d=json.loads(sys.argv[1])[\"current_policy\"][\"route_distribution\"]
+assert d[\"sol_medium\"]==2 and d[\"luna_max\"]==1 and d[\"luna_high\"]==1 and \"sol_high\" not in d and \"terra_low\" not in d, d
 " "$rep"' "$rep"
 
 echo "Unrouted lanes are backfilled"
@@ -801,7 +830,7 @@ out=$(STUB_CHOICE=luna_low STUB_CONF=0.95 "$S/codex-lane.sh" --spec "$T/spec-bf"
 a=$(last_attempt); bid=$(field "$a" id); d=$(dec "$bid")
 check "lane without --route-id still succeeds" '[ $rc -eq 0 ]' "$out"
 check "attempt joins a backfilled decision and stays unrouted" '[ "$(field "$a" unrouted)" = True ] && [ "$(field "$d" backfilled)" = True ] && ! grep -q "^unrouted-" <<<"$bid"' "$a / $d"
-check "shadow Jev answer is logged beside the route that ran" '[ "$(field "$d" jev_status)|$(field "$d" jev_route)|$(field "$d" actual_route)|$(field "$d" decided_by)|$(field "$d" model)" = "shadow|luna_low|luna_high|lane|gpt-6-luna" ]' "$d"
+check "shadow Jev answer is logged beside the route that ran" '[ "$(field "$d" jev_status)|$(field "$d" jev_route)|$(field "$d" actual_route)|$(field "$d" decided_by)|$(field "$d" model)" = "shadow|luna_low|terra_low|lane|gpt-6.1-terra" ]' "$d"
 check "objective and verification are read off the spec" '[ "$(field "$d" task)" = "Add rounding to the price formatter" ] && [ "$(field "$d" floor)" = luna_low ]' "$d"
 check "Jev sees the objective and file count, not the spec body" 'grep -q "Add rounding" "$STUB_JEV_LOG" && ! grep -q "pytest" "$STUB_JEV_LOG"' "$(cat "$STUB_JEV_LOG" 2>/dev/null)"
 check "the backfilled decision logs that same state as jev_input" 'same_input "$d" && ! grep -q pytest <<<"$d"' "$d"
@@ -810,36 +839,49 @@ discard "$out"
 rm -f "$STUB_ARGV_DIR"/*
 out=$(STUB_CHOICE=luna_low STUB_CONF=0.99 FABLE_JEV_MODE=active "$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")
-check "active mode: a confident Jev still cannot change a running lane" 'argv_has gpt-6-luna && ! argv_has gpt-6.1-sol && [ "$(field "$d" jev_status)/$(field "$d" actual_route)" = shadow/luna_high ]' "$d"
+check "active mode: a confident Jev still cannot change a running lane" 'argv_has gpt-6.1-terra && ! argv_has gpt-6.2-sol && [ "$(field "$d" jev_status)/$(field "$d" actual_route)" = shadow/terra_low ]' "$d"
 discard "$out"
-out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --model gpt-6.1-sol --effort xhigh 2>/dev/null)
+out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --model gpt-6.2-sol --effort xhigh 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")
-check "strong model at xhigh is not passed off as sol_high: unmapped, real model/effort kept" '[ "$(field "$d" actual_route)|$(field "$d" model)|$(field "$d" effort)" = "unmapped|gpt-6.1-sol|xhigh" ]' "$d"
+check "strong model at xhigh is not passed off as sol_medium: unmapped, real model/effort kept" '[ "$(field "$d" actual_route)|$(field "$d" model)|$(field "$d" effort)" = "unmapped|gpt-6.2-sol|xhigh" ]' "$d"
 discard "$out"
-out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --model gpt-6.1-sol --effort high 2>/dev/null)
+out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --model gpt-6.2-sol --effort high 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")
-check "strong model at old high effort backfills as unmapped" '[ "$(field "$d" actual_route)|$(field "$d" model)|$(field "$d" effort)" = "unmapped|gpt-6.1-sol|high" ]' "$d"
+check "strong model at old high effort backfills as unmapped" '[ "$(field "$d" actual_route)|$(field "$d" model)|$(field "$d" effort)" = "unmapped|gpt-6.2-sol|high" ]' "$d"
 discard "$out"
-out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --model gpt-6.1-sol --effort medium 2>/dev/null)
+out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --model gpt-6.2-sol --effort medium 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")
-check "sol medium backfill -> sol_high" '[ "$(field "$d" actual_route)|$(field "$d" model)|$(field "$d" effort)" = "sol_high|gpt-6.1-sol|medium" ]' "$d"
+check "sol medium backfill -> sol_medium" '[ "$(field "$d" actual_route)|$(field "$d" model)|$(field "$d" effort)" = "sol_medium|gpt-6.2-sol|medium" ]' "$d"
+discard "$out"
+out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --model gpt-6.1-terra --effort medium 2>/dev/null)
+d=$(dec "$(field "$(last_attempt)" id)")
+check "Terra medium backfill -> terra_medium" '[ "$(field "$d" actual_route)|$(field "$d" model)|$(field "$d" effort)" = "terra_medium|gpt-6.1-terra|medium" ]' "$d"
+discard "$out"
+out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --model gpt-6-luna --effort max 2>/dev/null)
+d=$(dec "$(field "$(last_attempt)" id)")
+check "Luna max effort backfill is unmapped" '[ "$(field "$d" actual_route)|$(field "$d" effort)" = "unmapped|max" ]' "$d"
 discard "$out"
 rm -f "$STUB_ARGV_DIR"/*
 out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --effort max 2>/dev/null)
 a=$(last_attempt); d=$(dec "$(field "$a" id)")
-check "luna max backfill -> luna_max, not luna_high" '[ "$(field "$d" actual_route)|$(field "$d" effort)|$(field "$a" effort)" = "luna_max|max|max" ] && argv_has model_reasoning_effort=max' "$d"
+check "default model at max backfill is unmapped, not terra_medium" '[ "$(field "$d" actual_route)|$(field "$d" effort)|$(field "$a" effort)" = "unmapped|max|max" ] && argv_has model_reasoning_effort=max' "$d"
 discard "$out"
 out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --effort xhigh 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")
-check "luna xhigh backfill is unmapped, never folded into luna_high" '[ "$(field "$d" actual_route)|$(field "$d" effort)" = "unmapped|xhigh" ]' "$d"
+check "default model at xhigh backfill is unmapped, never folded into terra_low" '[ "$(field "$d" actual_route)|$(field "$d" effort)" = "unmapped|xhigh" ]' "$d"
 discard "$out"
 out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --effort high 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")
-check "luna high backfill -> luna_high, policy_version on decision and attempt" '[ "$(field "$d" actual_route)|$(field "$d" policy_version)|$(field "$(last_attempt)" policy_version)" = "luna_high|5.7.0|5.7.0" ]' "$d"
+check "Terra high backfill is unmapped, policy_version on decision and attempt" '[ "$(field "$d" actual_route)|$(field "$d" policy_version)|$(field "$(last_attempt)" policy_version)" = "unmapped|5.9.0|5.9.0" ]' "$d"
 discard "$out"
 out=$("$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" --effort low 2>/dev/null)
 d=$(dec "$(field "$(last_attempt)" id)")
-check "default model at low effort is recorded as luna_low" '[ "$(field "$d" actual_route)" = luna_low ]' "$d"
+check "Terra low default pair maps to terra_low" '[ "$(field "$(FABLE_CODEX_DEFAULT_MODEL=gpt-6.1-terra FABLE_CODEX_DEFAULT_EFFORT=low python3 "$S/fable-route.py" backfill --model gpt-6.1-terra --effort low --file-count 2)" actual_route)" = terra_low ]'
+check "Luna low configured light pair maps to luna_low" '[ "$(field "$(FABLE_CODEX_LIGHT_MODEL=gpt-6-luna python3 "$S/fable-route.py" backfill --model gpt-6-luna --effort low --file-count 2)" actual_route)" = luna_low ]'
+check "Terra medium pair maps to terra_medium" '[ "$(field "$(FABLE_CODEX_DEEP_MODEL=gpt-6.1-terra python3 "$S/fable-route.py" backfill --model gpt-6.1-terra --effort medium --file-count 2)" actual_route)" = terra_medium ]'
+check "a pair shared by two routes is unmapped" '[ "$(field "$(FABLE_CODEX_DEEP_EFFORT=low python3 "$S/fable-route.py" backfill --model gpt-6.1-terra --effort low --file-count 2)" actual_route)" = unmapped ]'
+check "Luna high pair is unmapped" '[ "$(field "$(FABLE_CODEX_LIGHT_MODEL=gpt-6-luna python3 "$S/fable-route.py" backfill --model gpt-6-luna --effort high --file-count 2)" actual_route)" = unmapped ]'
+check "default model at low effort is recorded as terra_low" '[ "$(field "$d" actual_route)" = terra_low ]' "$d"
 discard "$out"
 reset_jev
 out=$(FABLE_JEV_MODE=off "$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" 2>/dev/null)
@@ -855,20 +897,20 @@ reset_jev
 out=$(STUB_JEV=sleep FABLE_JEV_TIMEOUT=1 "$S/codex-lane.sh" --spec "$T/spec-bf2" --files "src/calc.py, src/mul.py" --repo "$REPO" 2>/dev/null); rc=$?
 d=$(dec "$(field "$(last_attempt)" id)")
 check "a high-floor backfill skips Jev as a single option, lane runs" '[ $rc -eq 0 ] && [ "$(field "$d" jev_status)|$(field "$d" skip_reason)" = "skipped|single_option" ] && [ "$(field "$d" task)" = "tidy the helpers." ]' "$d"
-check "no verification line: floor stays luna_high" '[ "$(field "$d" floor)" = luna_high ]' "$d"
+check "no verification line: floor stays terra_low" '[ "$(field "$d" floor)" = terra_low ]' "$d"
 discard "$out"
 reset_jev; reset_imajev; imajev_says '{"choice":"luna_low","conf":0.93}'; rm -f "$STUB_ARGV_DIR"/*
-out=$(STUB_CHOICE=luna_high STUB_CONF=0.9 FABLE_IMAJEV_MODE=shadow FABLE_IMAJEV_URL="$IMAJEV_URL" FABLE_IMAJEV_EXPERIMENT_TAG=lane-test \
+out=$(STUB_CHOICE=terra_low STUB_CONF=0.9 FABLE_IMAJEV_MODE=shadow FABLE_IMAJEV_URL="$IMAJEV_URL" FABLE_IMAJEV_EXPERIMENT_TAG=lane-test \
       "$S/codex-lane.sh" --spec "$T/spec-bf" --files src/mul.py --repo "$REPO" 2>/dev/null); rc=$?
 d=$(dec "$(field "$(last_attempt)" id)")
-check "unrouted lane + Imajev shadow: both answers on the backfilled decision, same input, the lane's model unchanged" '[ $rc -eq 0 ] && [ "$(field "$d" backfilled)|$(field "$d" decided_by)|$(field "$d" actual_route)|$(field "$d" jev_route)|$(field "$d" imajev_route)|$(field "$d" imajev_experiment_tag)" = "True|lane|luna_high|luna_high|luna_low|lane-test" ] && same_decision "$d" && argv_has gpt-6-luna && ! argv_has gpt-6.1-sol' "$d"
+check "unrouted lane + Imajev shadow: both answers on the backfilled decision, same input, the lane's model unchanged" '[ $rc -eq 0 ] && [ "$(field "$d" backfilled)|$(field "$d" decided_by)|$(field "$d" actual_route)|$(field "$d" jev_route)|$(field "$d" imajev_route)|$(field "$d" imajev_experiment_tag)" = "True|lane|terra_low|terra_low|luna_low|lane-test" ] && same_decision "$d" && argv_has gpt-6.1-terra && ! argv_has gpt-6.2-sol' "$d"
 discard "$out"
 rep=$(python3 "$S/routing-report.py" --json)
 check "report: backfills counted, unrouted runs not counted as routed, shadow evidence joins" 'python3 -c "
 import json,sys; d=json.loads(sys.argv[1])[\"current_policy\"]; c=d[\"compliance\"]
 assert c[\"backfilled_decisions\"]>=5 and c[\"routed_lane_run_rate\"]<0.5, c
 assert d[\"jev\"][\"consulted_on_backfill\"]>=1, d[\"jev\"]
-assert \"jev=luna_low ran=luna_high\" in d[\"shadow_disagreement_lanes\"], d[\"shadow_disagreement_lanes\"]
+assert \"jev=luna_low ran=terra_low\" in d[\"shadow_disagreement_lanes\"], d[\"shadow_disagreement_lanes\"]
 " "$rep"' "$rep"
 PATH="$CODEXBIN:$BASE"; reset_jev
 
@@ -949,8 +991,8 @@ check "security-sensitive work runs under strict scope, and lane_args carry it" 
 r=$(route off "$MIDDLE")
 check "ordinary work: expected scope, no strict flag" '[ -z "$(field "$r" strict_scope)" ] && ! grep -q strict <<<"$(field "$r" lane_args)" && [ "$(field "$r" role)" = default_worker ]' "$r"
 r=$(route off '{"file_count":2,"verification_available":true,"strict_scope":true}')
-check "strict_scope can be requested explicitly, without changing the route" '[ "$(field "$r" strict_scope_reason)|$(field "$r" actual_route)" = "requested|luna_high" ]' "$r"
-PATH="$JEVBIN:$BASE"; reset_jev; export STUB_CHOICE=luna_high STUB_CONF=0.9
+check "strict_scope can be requested explicitly, without changing the route" '[ "$(field "$r" strict_scope_reason)|$(field "$r" actual_route)" = "requested|terra_low" ]' "$r"
+PATH="$JEVBIN:$BASE"; reset_jev; export STUB_CHOICE=terra_low STUB_CONF=0.9
 route active '{"file_count":4,"verification_available":true,"strict_scope":true}' >/dev/null
 check "strict_scope is never sent to Jev" '! grep -q strict_scope "$STUB_JEV_LOG"' "$(cat "$STUB_JEV_LOG")"
 reset_jev; PATH="$BASE"
@@ -973,6 +1015,42 @@ assert n[\"paths\"][\"implement_codex\"][\"codex\"] > 0   # the lane preamble is
 " "$pb"' "$pb"
 check "prompt-budget compares against a git revision" 'python3 "$S/prompt-budget.py" --ref HEAD >/dev/null'
 check "no model versions in prompts: a model update is a config change" '! grep -nE "GPT-6|gpt-6|Opus 5|Fable 5|Luna|Sol\b" "$ROOT/skills/orchestration/SKILL.md" "$ROOT"/agents/*.md' "$(grep -nE "GPT-6|gpt-6|Opus 5|Fable 5|Luna|Sol\b" "$ROOT/skills/orchestration/SKILL.md" "$ROOT"/agents/*.md)"
+
+echo "Architect (Orca only)"
+ST="$T/architect.json"
+arch() { local cmd=$1; shift; env FABLE_ARCHITECT_STATE="$ST" "$@" python3 "$S/fable-architect.py" "$cmd"; }
+ao() { arch "$1" ORCA_APP_VERSION=1 "${@:2}"; }
+fa() { field "$a" architect; }
+a=$(arch status)
+check "outside Orca the architect is the session, unchanged" '[ "$(fa)|$(field "$a" reason)" = "session|not_orca" ]' "$a"
+a=$(ao status)
+check "in Orca with no claim the fallback holds the role" '[ "$(fa)|$(field "$a" model)/$(field "$a" effort)" = "fallback|claude-opus-5-5/medium" ]' "$a"
+ao claim >/dev/null; a=$(ao status)
+check "a claim opens the ack window: pending" '[ "$(fa)|$(field "$a" state)" = "pending|pending" ]' "$a"
+ao ack; a=$(ao status)
+check "an ack makes the primary the architect" '[ "$(fa)|$(field "$a" model)/$(field "$a" effort)|$(field "$a" state)" = "primary|gemini-4-neon/high|working" ]' "$a"
+ao claim >/dev/null; a=$(ao status)
+check "a claim does not take the role from a primary already working" '[ "$(fa)" = primary ]' "$a"
+ao done; a=$(ao status)
+check "done releases the role" '[ "$(fa)" = released ]' "$a"
+ao claim FABLE_ARCHITECT_ACK_TIMEOUT=0; sleep 1; a=$(ao status FABLE_ARCHITECT_ACK_TIMEOUT=0)
+check "no ack within the window: the fallback takes over" '[ "$(fa)|$(field "$a" reason)" = "fallback|no_ack" ]' "$a"
+a=$(ao wait FABLE_ARCHITECT_ACK_TIMEOUT=1)
+check "wait returns once the window closes, never hangs" '[ "$(fa)|$(field "$a" reason)" = "fallback|no_ack" ]' "$a"
+ao ack; ao claim; a=$(ao status)
+check "an ack before the claim is kept" '[ "$(fa)" = primary ]' "$a"
+a=$(ao status FABLE_ARCHITECT_WORK_TIMEOUT=0); sleep 1; a=$(ao status FABLE_ARCHITECT_WORK_TIMEOUT=0)
+check "an acked primary silent past WORK_TIMEOUT is lost: the fallback takes over" '[ "$(fa)|$(field "$a" reason)" = "fallback|lost" ]' "$a"
+ao beat; a=$(ao status)
+check "a beat keeps the primary alive" '[ "$(fa)" = primary ]' "$a"
+a=$(ao status FABLE_ARCHITECT_MODE=off)
+check "FABLE_ARCHITECT_MODE=off disables the rule even in Orca" '[ "$(fa)|$(field "$a" reason)" = "session|mode_off" ]' "$a"
+a=$(ao status FABLE_ARCHITECT_PRIMARY_MODEL=other)
+check "models are configuration, not code" '[ "$(field "$a" model)" = other ]' "$a"
+a=$(ao ack); check "ack says it worked (silence looks like a failure to a model)" '[ "$a" = "ack ok" ]' "$a"
+check "the runbook gives absolute-path commands, never an unexpanded variable" '! grep -q "\$FABLE_ADVISOR_HOME/scripts" "$ROOT/docs/ARCHITECT-PRIMARY.md" "$ROOT/docs/antigravity/fable-architect-primary/SKILL.md"'
+check "the architect script never launches a process" '! grep -qE "subprocess|os\\.system|Popen|exec[lv]" "$S/fable-architect.py"'
+check "the primary runbook names every command it needs" 'grep -q "architect.py ack" "$ROOT/docs/ARCHITECT-PRIMARY.md" && grep -q "architect.py beat" "$ROOT/docs/ARCHITECT-PRIMARY.md" && grep -q "architect.py done" "$ROOT/docs/ARCHITECT-PRIMARY.md"'
 
 echo "Concurrent lanes"
 REPO="$T/repo3"; mkrepo "$REPO"; spec src/mul.py "$T/spec2"
