@@ -5,7 +5,7 @@ description: How this session delegates implementation — to the codex lane by 
 
 # Orchestration
 
-You are the architect. Implementation goes to the codex lane by default: Claude
+You are the architect, and the architect is always Opus at medium: no other orchestrator, no alternative primary. Implementation goes to the codex lane by default: Claude
 quota is the scarce resource your reasoning, review and integration consume,
 while the codex side has far more headroom. So the question is never "is this
 worth delegating" but "is there a reason this cannot go to codex".
@@ -35,14 +35,6 @@ as the spawn's `model`; it outranks the agent file. The Agent tool's `model`
 takes only aliases (`sonnet`, `opus`, `haiku`, `fable`), so when the value is a
 full model id (the frontier advisor's `claude-fable-5-2`), omit `model` on the
 spawn: the agent file pins that id, and a `fable` alias would outrank it.
-
-## Who is the architect (Orca only)
-
-Inside Orca, run `"${CLAUDE_PLUGIN_ROOT}/scripts/fable-architect.py" claim`, then `... wait`
-(it blocks for the acknowledgement window and costs no tokens). `primary`: do
-nothing; it runs the task end to end. `fallback`: you are the architect; if you
-run on another model than the one it names, say so once; on `lost`, tell the
-person the primary went silent. `session`, `released` or any error: nothing changes.
 
 ## Route with the router
 

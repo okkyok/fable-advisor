@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2034,SC2209  # variables are read inside check's eval strings
-# Offline test suite: architect role in Orca (6.0.0), routing policy 5.9.0 (terra_medium eligibility, claude_opus_high
+# Offline test suite: routing policy 5.9.0 (terra_medium eligibility, claude_opus_high
 # escalation, Fable consult triggers, strict scope), Jev modes and fallbacks,
 # review gate (self/opus/fable), ledger and the policy-versioned report,
 # backfill, the codex lane's model/effort, expected/strict scope, harness
@@ -1015,42 +1015,6 @@ assert n[\"paths\"][\"implement_codex\"][\"codex\"] > 0   # the lane preamble is
 " "$pb"' "$pb"
 check "prompt-budget compares against a git revision" 'python3 "$S/prompt-budget.py" --ref HEAD >/dev/null'
 check "no model versions in prompts: a model update is a config change" '! grep -nE "GPT-6|gpt-6|Opus 5|Fable 5|Luna|Sol\b" "$ROOT/skills/orchestration/SKILL.md" "$ROOT"/agents/*.md' "$(grep -nE "GPT-6|gpt-6|Opus 5|Fable 5|Luna|Sol\b" "$ROOT/skills/orchestration/SKILL.md" "$ROOT"/agents/*.md)"
-
-echo "Architect (Orca only)"
-ST="$T/architect.json"
-arch() { local cmd=$1; shift; env FABLE_ARCHITECT_STATE="$ST" "$@" python3 "$S/fable-architect.py" "$cmd"; }
-ao() { arch "$1" ORCA_APP_VERSION=1 "${@:2}"; }
-fa() { field "$a" architect; }
-a=$(arch status)
-check "outside Orca the architect is the session, unchanged" '[ "$(fa)|$(field "$a" reason)" = "session|not_orca" ]' "$a"
-a=$(ao status)
-check "in Orca with no claim the fallback holds the role" '[ "$(fa)|$(field "$a" model)/$(field "$a" effort)" = "fallback|claude-opus-5-5/medium" ]' "$a"
-ao claim >/dev/null; a=$(ao status)
-check "a claim opens the ack window: pending" '[ "$(fa)|$(field "$a" state)" = "pending|pending" ]' "$a"
-ao ack; a=$(ao status)
-check "an ack makes the primary the architect" '[ "$(fa)|$(field "$a" model)/$(field "$a" effort)|$(field "$a" state)" = "primary|gemini-4-neon/high|working" ]' "$a"
-ao claim >/dev/null; a=$(ao status)
-check "a claim does not take the role from a primary already working" '[ "$(fa)" = primary ]' "$a"
-ao done; a=$(ao status)
-check "done releases the role" '[ "$(fa)" = released ]' "$a"
-ao claim FABLE_ARCHITECT_ACK_TIMEOUT=0; sleep 1; a=$(ao status FABLE_ARCHITECT_ACK_TIMEOUT=0)
-check "no ack within the window: the fallback takes over" '[ "$(fa)|$(field "$a" reason)" = "fallback|no_ack" ]' "$a"
-a=$(ao wait FABLE_ARCHITECT_ACK_TIMEOUT=1)
-check "wait returns once the window closes, never hangs" '[ "$(fa)|$(field "$a" reason)" = "fallback|no_ack" ]' "$a"
-ao ack; ao claim; a=$(ao status)
-check "an ack before the claim is kept" '[ "$(fa)" = primary ]' "$a"
-a=$(ao status FABLE_ARCHITECT_WORK_TIMEOUT=0); sleep 1; a=$(ao status FABLE_ARCHITECT_WORK_TIMEOUT=0)
-check "an acked primary silent past WORK_TIMEOUT is lost: the fallback takes over" '[ "$(fa)|$(field "$a" reason)" = "fallback|lost" ]' "$a"
-ao beat; a=$(ao status)
-check "a beat keeps the primary alive" '[ "$(fa)" = primary ]' "$a"
-a=$(ao status FABLE_ARCHITECT_MODE=off)
-check "FABLE_ARCHITECT_MODE=off disables the rule even in Orca" '[ "$(fa)|$(field "$a" reason)" = "session|mode_off" ]' "$a"
-a=$(ao status FABLE_ARCHITECT_PRIMARY_MODEL=other)
-check "models are configuration, not code" '[ "$(field "$a" model)" = other ]' "$a"
-a=$(ao ack); check "ack says it worked (silence looks like a failure to a model)" '[ "$a" = "ack ok" ]' "$a"
-check "the runbook gives absolute-path commands, never an unexpanded variable" '! grep -q "\$FABLE_ADVISOR_HOME/scripts" "$ROOT/docs/ARCHITECT-PRIMARY.md" "$ROOT/docs/antigravity/fable-architect-primary/SKILL.md"'
-check "the architect script never launches a process" '! grep -qE "subprocess|os\\.system|Popen|exec[lv]" "$S/fable-architect.py"'
-check "the primary runbook names every command it needs" 'grep -q "architect.py ack" "$ROOT/docs/ARCHITECT-PRIMARY.md" && grep -q "architect.py beat" "$ROOT/docs/ARCHITECT-PRIMARY.md" && grep -q "architect.py done" "$ROOT/docs/ARCHITECT-PRIMARY.md"'
 
 echo "Concurrent lanes"
 REPO="$T/repo3"; mkrepo "$REPO"; spec src/mul.py "$T/spec2"
