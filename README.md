@@ -126,12 +126,6 @@ all as environment variables:
 | `FABLE_CODEX_DEEP_MODEL` | `gpt-6.1-terra` | the `terra_medium` model |
 | `FABLE_CODEX_DEEP_EFFORT` | `medium` | the `terra_medium` effort |
 | `FABLE_SENIOR_MODEL` | `opus` | the senior worker (`claude_opus_high`) and senior reviewer (`opus_review`), passed as the spawn's `model` |
-| `FABLE_ARCHITECT_MODE` | `orca` | `orca` \| `off`; the architect rule applies only inside Orca |
-| `FABLE_ARCHITECT_PRIMARY_MODEL` / `_EFFORT` | `gemini-4-neon` / `high` | the interactive primary architect |
-| `FABLE_ARCHITECT_FALLBACK_MODEL` / `_EFFORT` | `claude-opus-5-5` / `medium` | takes the role when the primary does not acknowledge, or is lost |
-| `FABLE_ARCHITECT_ACK_TIMEOUT` | `30` | seconds from the claim to the primary's `ack` |
-| `FABLE_ARCHITECT_WORK_TIMEOUT` | `600` | seconds without a `beat` after the ack before the primary counts as lost |
-| `FABLE_ARCHITECT_STATE` | `~/.claude/fable-advisor/architect.json` | the state file the primary's own session writes |
 | `FABLE_FRONTIER_MODEL` | `claude-fable-5-2` | the frontier advisor (`consult_first`, `fable_review`) |
 | `FABLE_LEDGER` | `~/.claude/fable-advisor/routing.jsonl` | `off` disables the ledger |
 | `FABLE_IMAJEV_MODE` | `off` | `off` \| `shadow`; anything else (including `active`) is `off`. See [Imajev-4B shadow comparison](#imajev-4b-shadow-comparison) |
@@ -355,27 +349,13 @@ review itself is contested — and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
 
-## 6.0.0
+## 6.1.0
 
-**Architect (Orca only).** Inside Orca (`ORCA_AGENT_SESSION_ID` or `ORCA_APP_VERSION`
-set), a person gives the task once to the primary architect (`gemini-4-neon` at
-`high`, an interactive session). A claude-side session runs `fable-architect.py
-claim` then `wait`; if the primary has not run `ack` within
-`FABLE_ARCHITECT_ACK_TIMEOUT` (30 s), the fallback (`claude-opus-5-5` at `medium`)
-holds the role. After the ack the primary runs the whole task itself — router, codex
-lane, apply — following [`docs/ARCHITECT-PRIMARY.md`](docs/ARCHITECT-PRIMARY.md), with no
-Claude tokens; its `beat`s only show it is alive, and `WORK_TIMEOUT` (600 s) of
-silence marks it `lost` and returns the role to the fallback. High-risk work (security,
-schema, migration, irreversible, API, concurrency) stops and reports to the person,
-because the independent review is a Claude agent the primary cannot spawn. Outside
-Orca, or with `FABLE_ARCHITECT_MODE=off`, `status` answers `session` and nothing changes.
-
-**No automation of the primary.** The plugin never starts, calls or wraps the
-primary: no headless CLI, no proxy, no account rotation. The person starts the primary
-session; it writes its own state. Routing policy and ledger are unchanged
-(`policy_version` stays `5.9.0`). A running session's model cannot be switched by a
-plugin: `status` names the model that should hold the role, and the skill has a
-session on another model say so once.
+**One orchestrator.** The orchestrator is Claude Opus 5.5 at `medium`, and nothing else.
+The Orca primary-architect mechanism of 6.0.0 (Gemini 4 Neon via Antigravity,
+`fable-architect.py`, `docs/ARCHITECT-PRIMARY.md`, the `FABLE_ARCHITECT_*` variables) is
+removed, so no Antigravity agent starts, hands work to, or wraps the Codex lane. Routing
+policy and ledger are unchanged (`policy_version` stays `5.9.0`).
 
 ## 5.9.0
 

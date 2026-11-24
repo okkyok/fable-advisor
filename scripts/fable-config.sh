@@ -33,23 +33,6 @@
 : "${FABLE_SENIOR_MODEL:=opus}"                # senior worker (claude_opus_high) and senior reviewer (opus_review)
 : "${FABLE_FRONTIER_MODEL:=claude-fable-5-2}"  # frontier advisor (consult_first, fable_review); pinned in agents/fable-advisor.md too
 
-# --- Architect (Orca only) ------------------------------------------------------
-# Inside Orca, a person gives the task to the primary architect once; if it does
-# not acknowledge within FABLE_ARCHITECT_ACK_TIMEOUT seconds, the fallback
-# architect takes the role. After the acknowledgement the primary runs the whole
-# task itself (router, codex lane, apply) with no Claude tokens, and its beats
-# only prove it is alive. fable-advisor never starts the primary: its own
-# interactive session writes the state (`fable-architect.py ack|beat|done`).
-# Outside Orca, or with FABLE_ARCHITECT_MODE=off, nothing here applies.
-: "${FABLE_ARCHITECT_MODE:=orca}"                       # orca | off
-: "${FABLE_ARCHITECT_PRIMARY_MODEL:=gemini-4-neon}"
-: "${FABLE_ARCHITECT_PRIMARY_EFFORT:=high}"
-: "${FABLE_ARCHITECT_FALLBACK_MODEL:=claude-opus-5-5}"
-: "${FABLE_ARCHITECT_FALLBACK_EFFORT:=medium}"
-: "${FABLE_ARCHITECT_ACK_TIMEOUT:=30}"                  # seconds from claim to the primary's ack
-: "${FABLE_ARCHITECT_WORK_TIMEOUT:=600}"                # seconds without a beat after the ack = lost
-: "${FABLE_ARCHITECT_STATE:=$HOME/.claude/fable-advisor/architect.json}"
-
 # --- Routing ledger (permanent) ------------------------------------------------
 : "${FABLE_LEDGER:=$HOME/.claude/fable-advisor/routing.jsonl}"   # "off" disables writing
 
@@ -74,9 +57,6 @@ export FABLE_CODEX_DEFAULT_MODEL FABLE_CODEX_DEFAULT_EFFORT FABLE_CODEX_LIGHT_MO
        FABLE_CODEX_STRONG_MODEL FABLE_CODEX_STRONG_EFFORT \
        FABLE_CODEX_DEEP_MODEL FABLE_CODEX_DEEP_EFFORT \
        FABLE_SENIOR_MODEL FABLE_FRONTIER_MODEL \
-       FABLE_ARCHITECT_MODE FABLE_ARCHITECT_PRIMARY_MODEL FABLE_ARCHITECT_PRIMARY_EFFORT \
-       FABLE_ARCHITECT_FALLBACK_MODEL FABLE_ARCHITECT_FALLBACK_EFFORT \
-       FABLE_ARCHITECT_ACK_TIMEOUT FABLE_ARCHITECT_WORK_TIMEOUT FABLE_ARCHITECT_STATE \
        FABLE_LEDGER FABLE_JEV_MODE FABLE_JEV_MIN_CONFIDENCE FABLE_JEV_TIMEOUT FABLE_JEV_BACKEND \
        FABLE_IMAJEV_MODE FABLE_IMAJEV_URL FABLE_IMAJEV_TIMEOUT FABLE_IMAJEV_MIN_CONFIDENCE \
        FABLE_IMAJEV_EXPERIMENT_TAG
