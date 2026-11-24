@@ -1,7 +1,7 @@
 {
   "name": "fable-advisor",
   "metadata": {
-    "description": "Delegation control plane for Claude Code: implementation goes to a Terra-at-low Codex lane by default (Luna at low for mechanical edits, Terra at medium for a narrow retry after a failure, Sol for broad work after a failure) and escalates to Claude Opus 5.5 for a named reason, each lane isolated in its own git worktree, routed by a deterministic policy with optional Jev adaptive routing (shadow, log-only, by default), with Opus 5.5 senior review and Fable 5 reserved for reframing stuck problems and exceptional review."
+    "description": "Delegation control plane for Claude Code with a single orchestrator, Claude Opus 5.5 at medium: implementation goes to a Terra-at-low Codex lane by default (Luna at low for mechanical edits, Terra at medium for a narrow retry after a failure, Sol for broad work after a failure) and escalates to Claude Opus 5.5 for a named reason, each lane isolated in its own git worktree, routed by a deterministic policy with optional Jev adaptive routing (shadow, log-only, by default), with Opus 5.5 senior review and Fable 5 reserved for reframing stuck problems and exceptional review."
   },
   "owner": {
     "name": "Dan McAteer",
@@ -11,7 +11,7 @@
     {
       "name": "fable-advisor",
       "source": "./",
-      "description": "Implementation goes to the Codex lane by default (Terra at low; Luna at low for mechanical edits; Terra at medium for a narrow retry after a failure; Sol for broad work after a failure) and escalates to Claude Opus 5.5 at high only for one of five named reasons. Obvious routes are decided by rule; optional Jev routing (FABLE_JEV_MODE=off|shadow|active) handles only the ambiguous middle behind a confidence and eligibility gate. Every lane runs in a disposable worktree. Lanes: Codex, a haiku/sonnet/opus implementer, a read-only Opus 5.5 reviewer, and a read-only Fable 5 advisor for reframes and exceptional review."
+      "description": "The orchestrator is always Claude Opus 5.5 at medium; no other primary architect. Implementation goes to the Codex lane by default (Terra at low; Luna at low for mechanical edits; Terra at medium for a narrow retry after a failure; Sol for broad work after a failure) and escalates to Claude Opus 5.5 at high only for one of five named reasons. Obvious routes are decided by rule; optional Jev routing (FABLE_JEV_MODE=off|shadow|active) handles only the ambiguous middle behind a confidence and eligibility gate. Every lane runs in a disposable worktree. Lanes: Codex, a haiku/sonnet/opus implementer, a read-only Opus 5.5 reviewer, and a read-only Fable 5 advisor for reframes and exceptional review."
     }
   ]
 }
