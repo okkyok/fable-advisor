@@ -169,14 +169,16 @@ folded into the nearest route; the real model and effort stay on the row. The
 `fable-route.py outcome --id <id> --outcome success|...`, which records whether
 the result was accepted.
 
-**Every new row carries `policy_version`** (`5.9.0`). The report never averages
+**Every new row carries `policy_version`** (`5.10.0`). The report never averages
 policies together: `current_policy` is the headline, `by_policy_version` holds
 one full section per policy (rows written before 5.4 have no version and form
 `pre-5.4`), and `historical_all` is the labelled mix. A row belongs to the policy
 of the decision it joins. Each section has `lane_attempts.by_route` (first-try
 and eventual success, retry rate, average/p50/p90 lane seconds, timeout rate,
 scope violations), `by_model_effort` (the same per attempt, keyed by what
-actually ran, e.g. `gpt-6-luna/max`), outcome stats by route (Opus included),
+actually ran, e.g. `gpt-6-luna/max`), `harness` (required-verification
+decisions, lane and apply verify states, refusals, unverified landings, forced
+applies, gate changes, verification conflicts, GUARDRAIL proposals), outcome stats by route (Opus included),
 Jev's `jev_recommendation_distribution` and `recommendation_by_input` (the same,
 split by `prior_failures`, `file_count`, `multi_component` and
 `interface_change` from the decision's `jev_input`), agreement, disagreements, confidence
@@ -322,8 +324,8 @@ caller reroutes; it never silently substitutes a different model.
 | `scripts/jev_route.py` | The only Jev-specific file: a typed-choice adapter over semdecide / jev-cli. Never imported when Jev is off. |
 | `scripts/imajev_route.py` | Imajev shadow adapter: `POST /v1/systemone` over the standard library, the same contract as `jev_route.py` plus probabilities, `unknown_probability` and `abstained`. Never imported when `FABLE_IMAJEV_MODE` is off. |
 | `scripts/routing-report.py` | Ledger summary per policy version: route and model/effort success, retries, p50/p90 duration and timeouts; Jev recommendations, agreement, confidence buckets and shadow counterfactuals; Imajev's, and Jev vs Imajev head to head. |
-| `scripts/codex-lane.sh` | Runs a Codex lane inside an isolated worktree with `--model`/`--effort` from the caller, runs the acceptance command (`--verify`), and reports what it touched, inside and outside the expected scope (`--strict-scope` makes Files an allowlist). With `--route-id` it records every run in the ledger itself. |
-| `scripts/codex-lane-apply.sh` | Lands a lane in the main tree: its scope plus any extra path codex named, never a strict-scope violation, never a lane that failed acceptance (without `--force`), never over a file the main tree changed since the lane started. Purely additive — never checkout/reset/clean/stash. |
+| `scripts/codex-lane.sh` | Runs a Codex lane inside an isolated worktree with `--model`/`--effort` from the caller, runs the acceptance command (`--verify`) on exactly what can land and fingerprints it, flags quality-gate changes, and reports what it touched, inside and outside the expected scope (`--strict-scope` makes Files an allowlist; `--require-verify` blocks a run without `--verify`). With `--route-id` it records every run in the ledger itself. |
+| `scripts/codex-lane-apply.sh` | Lands a lane in the main tree: its scope plus any extra path codex named, never a strict-scope violation, never a lane that failed acceptance, never over a file the main tree changed since the lane started; a required-verification lane only on a pass that still covers exactly what lands (`stale`/`partial` otherwise). `--force` needs `--reason`; every apply is a ledger row. Purely additive — never checkout/reset/clean/stash. |
 | `scripts/verify-codex-lane.sh` | End-to-end check: runs a real lane against a scratch repo and asserts a co-resident lane's uncommitted work survives. |
 | `tests/run.sh` | Offline suite (stub codex and Jev, a loopback Imajev stub server): routing in all three modes, Imajev shadow (same input, every failure, concurrency), every fallback, hard rules, `terra_medium` eligibility, Opus escalation, Fable consult triggers, review gate, ledger, policy-versioned report, backfill, lane model/effort, expected/strict scope, harness acceptance, apply guards, isolation, concurrent lanes, prompt budgets. |
 | `agents/opus-reviewer` | `opus_review`: read-only senior reviewer (Opus, effort pinned `high`), fresh-context review with the silence gap; a second pass only when needed. |
@@ -348,6 +350,74 @@ Review in proportion to blast radius — Opus for risk, Fable only when the
 review itself is contested — and before reviewing compute the *silence
 gap*: what the change should have touched minus what it did, because a diff shows
 what changed and never what should have changed and didn't.
+
+## 6.2.0
+
+**An acceptance result now has to cover what lands (policy 5.10.0).** Before, a
+lane's `verify=pass` was trusted at apply time even when the worktree had been
+edited since, when only some of its files landed, or when it passed because of
+an out-of-scope file that was never applied; a high-risk lane could run with no
+verification at all; a later unverified run inherited an earlier pass in the
+review gate; and a caller's `verification_passed: true` silently beat a recorded
+fail. Each of these was reproduced with the stub harness before the fix.
+
+- **States.** The lane records `pass`, `fail`, `not_run` (no wall clock left, or
+  killed by it) and `infra_error` (exit 126/127: the command could not run —
+  exit 0, not an escalating exit 6). Apply adds `stale` (a verified file
+  changed after the run; content fingerprint) and `partial` (what would land is
+  not the verified set). Only `pass` is a pass; `none` is no evidence.
+- **What is verified is what lands.** Before acceptance the lane moves unapplied
+  out-of-scope paths aside to `<worktree>.excluded/`, restoring their baseline.
+  Apply checks every path before copying any.
+- **`verify_required`.** The router sets it for high-risk and strict-scope work
+  and for `verification_required: true` (the project demands it; rule-only,
+  never sent to Jev), and adds `--require-verify` to `lane_args`. Such a lane is
+  blocked without `--verify`, and apply lands it only on `pass` — otherwise
+  nothing. Low-risk work keeps verification optional: a typo fix is not blocked.
+- **`--force` needs `--reason`**, and every non-dry apply writes an `apply` row
+  (`verify_state`, applied/refused, `forced`, `reason`) under the lane's route id.
+- **Latest evidence wins.** The review gate reads the latest delivering attempt
+  or apply for the id. A stated pass against a recorded `fail` is overruled and
+  logged as `verification_conflict`; a stated `quality_gate_change: false`
+  against the lane's count is overruled as `gate_conflict`.
+- **Quality gates.** A landing path that is CI, test/lint/type/coverage
+  config (`FABLE_GATE_PATHS`), a deleted test or an added skip
+  (`FABLE_TEST_PATHS`, `FABLE_SKIP_MARKERS`), or a glob in the repo's own
+  `.fable-gates` is listed under `QUALITY GATES`, counted as `gate_changes`, and
+  puts the review at `opus_review` (`high_risk:quality_gate_change`). The
+  reviewer judges whether the gate got weaker; nothing is forbidden outright.
+- **GUARDRAIL proposals.** `opus-reviewer` may add one
+  `GUARDRAIL: <failure class> — <mechanism> — <task|project> — <priority>` line
+  per recurring, mechanically checkable failure class, and nothing otherwise;
+  `outcome --guardrails N` records the count. What to do with one, project
+  guardrail discovery, verification choice and feature maps live in
+  `skills/orchestration/guardrails.md`, read on demand only.
+- **Verification tiers.** CI minutes are scarce, local runs are free: the
+  whole suite runs locally before every merge (one project command; merge only
+  on exit 0, result recorded in the PR), CI runs only fast, deterministic checks
+  through one light command, and each lane verifies only its task. A project
+  declares its tiers in `AGENTS.md` / `CLAUDE.md`; without them nothing changes
+  and tiers are proposed, never written unasked. Also in `guardrails.md`.
+
+**Limits.** These checks keep an honest workflow honest; they are not a security
+boundary — anyone with a shell can copy files or edit the scripts. Gate
+detection is pattern-based and advisory (a weakened gate in an unlisted file is
+missed; `package.json`/`pyproject.toml` are not listed by default because most
+of their edits are not gates — add them to `.fable-gates` where they are).
+Apply never deletes, so a lane that deletes a file lands as `partial` (a
+required one only with `--force --reason`); the apply output names the file to
+remove by hand. Files a lane writes under gitignored paths are not moved aside
+before acceptance. A pass made before another lane landed is `stale` when the
+main tree differs from the lane's base outside what lands; a required lane
+caught that way is re-run (it reseeds from the current tree).
+Mandatory gates belong in the repository's CI and branch protection.
+
+**Prompt cost** (`prompt-budget.py --ref 17dc88a`): normal codex path Claude-side
+2555 → 2678 (+4.8%), codex preamble 243 → 260 (both together +5.0%);
+`review_opus` 346 → 460 (only on high-risk reviews); `always_on` unchanged.
+
+**Revert:** check out `scripts/`, `agents/`, `skills/` and `tests/` from 6.1.0.
+Ledger rows stay readable either way (only fields and an `apply` event were added).
 
 ## 6.1.0
 

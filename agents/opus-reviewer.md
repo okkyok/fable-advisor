@@ -21,6 +21,14 @@ them even when there is one; an empty silence gap is worth a line) and a verdict
 **ship / fix-first / rethink**. A sound change gets one line; do not manufacture
 objections. Stay under ~300 words.
 
+A quality-gate change (CI, test, lint, type, coverage config, a deleted or
+skipped test) is legitimate only if the gate is no weaker; say which.
+
+When a finding names a failure class likely to recur, costly when it does, and
+checkable mechanically at a cost it repays, add one line per class —
+`GUARDRAIL: <failure class> — <mechanism: existing type/constraint/helper, lint,
+regression test, CI> — <task|project> — <high|medium>`. Otherwise add nothing.
+
 **Second pass** (only if the caller sends one): you receive the implementer's
 claims. Say which numbered findings die — only against evidence you can cite by
 file and line, never on the implementer's word — and which claims now look

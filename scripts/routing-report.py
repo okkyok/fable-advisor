@@ -178,6 +178,26 @@ def section(rows):
            "consult_first": tally((r.get("consult_reason") or "yes" for r in decisions if r.get("consult_first"))),
            "outcomes_recorded": len(outcomes)}
 
+    harness_attempts = [r for r in rows if r.get("event") == "attempt"]
+    applies = [r for r in rows if r.get("event") == "apply"]
+    out["harness"] = {
+        "verify_required_decisions": sum(1 for r in decisions if r.get("verify_required") is True),
+        "attempt_verify": tally(r.get("verify", "none") for r in harness_attempts
+                                if r.get("lane_status") in ("ok", "error", "timeout")),
+        "blocked_for_missing_verify": sum(1 for r in harness_attempts if r.get("lane_status") == "blocked"
+                                          and r.get("verify_required") is True),
+        "gate_change_attempts": sum(1 for r in harness_attempts if (num(r.get("gate_changes")) or 0) > 0),
+        "applies": len(applies),
+        "apply_verify_state": tally(r.get("verify_state") for r in applies),
+        "apply_refused": sum(1 for r in applies if num(r.get("applied")) == 0 and r.get("verify_state") != "pass"),
+        "landed_unverified": sum(1 for r in applies if (num(r.get("applied")) or 0) > 0
+                                 and r.get("verify_state") != "pass"),
+        "forced_applies": sum(1 for r in applies if r.get("forced") is True),
+        "verification_conflicts": sum(1 for r in reviews if r.get("verification_conflict") is True),
+        "quality_gate_reviews": sum(1 for r in reviews if r.get("quality_gate_change") is True),
+        "guardrails_proposed": sum(num(r.get("guardrails")) or 0 for r in rows if r.get("event") == "outcome"),
+    }
+
     by_route = defaultdict(list)
     for o in outcomes.values():
         by_route[o.get("actual_route")].append(o)
@@ -556,7 +576,7 @@ def report(rows, current):
     out = {"current_policy_version": current,
            "policy_version_distribution": {
                kind: tally(policy_of(r, decision_policy) for r in evented if r.get("event") == kind)
-               for kind in ("decision", "review", "attempt", "outcome")},
+               for kind in ("decision", "review", "attempt", "outcome", "apply")},
            "current_policy": section(segments.get(current, [])),
            "by_policy_version": {v: section(segments[v]) for v in sorted(segments, key=order)},
            "historical_all": dict(
