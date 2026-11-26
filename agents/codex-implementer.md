@@ -40,7 +40,7 @@ failed and the report does not say why.
 | 1 empty diff | `blocked` — codex produced nothing |
 | 3 | `unavailable` — quote the `status:` line (quota reset time included) |
 | 4 | `timeout` — the worktree is kept; copy the `handoff:` block into `RESUME` |
-| 5 | `blocked` — a bad call or Files outside one repo; ask the caller to fix it |
+| 5 | `blocked` — a bad call, Files outside one repo, or a required VERIFY missing; ask the caller to fix it |
 | 6 | `partial` — acceptance failed; include the output tail |
 
 If codex's final message ends with `NEED_TOOL:`, report `need_tool` with the
@@ -60,7 +60,7 @@ STATUS: complete | partial | timeout | unavailable | need_tool | blocked
 MODEL / EFFORT: [what the LANE REPORT says ran]
 ROUTE ID: [the id used, or the backfilled one the LANE REPORT printed]
 CHANGES: [file — one-line summary, from the touched list]
-SCOPE: [expected or strict; any path outside it, and codex's reason]
+SCOPE: [expected or strict; any path outside it, and codex's reason; QUALITY GATES]
 VERIFY: [the lane's acceptance result and command]
 CODEX SAID: [one line; note any disagreement with the diff]
 GAPS: [spec ambiguities, unfinished items, or "none"]

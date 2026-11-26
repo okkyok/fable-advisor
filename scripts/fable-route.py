@@ -48,7 +48,7 @@ import threading
 import time
 import uuid
 
-POLICY_VERSION = "5.9.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
+POLICY_VERSION = "5.10.0"  # bump whenever routes, rules, floors, Jev options or lane semantics change
 HERE = os.path.dirname(os.path.abspath(__file__))
 AGENTS_DIR = os.path.join(os.path.dirname(HERE), "agents")
 sys.dont_write_bytecode = True  # importing jev_route must not litter the plugin directory
@@ -137,6 +137,9 @@ ROUTE_FIELDS = {
     # Scope mode for the worker. Rule-only: it changes how a lane is run, not
     # which route, so it is never sent to Jev.
     "strict_scope": bool,
+    # The project requires a passing acceptance run for this change (its
+    # AGENTS.md / CLAUDE.md says so). Rule-only, like strict_scope.
+    "verification_required": bool,
 }
 REVIEW_FIELDS = {
     "objective": str, "file_count": int, "lines_changed": int, "mechanical": bool,
@@ -146,11 +149,14 @@ REVIEW_FIELDS = {
     "silence_gap": int, "attempts": int,
     # Exceptional-review signals (fable_review). Rule-only, never sent to Jev.
     "architectural_deadlock": bool, "opus_review_inconclusive": bool,
+    # CI, test, lint, type or coverage configuration changed, a test was deleted
+    # or skipped. Read from the lane's attempt row when not stated. Rule-only.
+    "quality_gate_change": bool,
 }
 CLAUDE_SIDE = ("context_bound", "below_spawn_floor", "judgment_dominated", "claude_only_tool")
 # Keys decided by rule alone and never part of what Jev sees.
-ROUTE_RULE_ONLY = CLAUDE_SIDE + ("architectural_deadlock", "opus_failed", "strict_scope")
-REVIEW_RULE_ONLY = ("architectural_deadlock", "opus_review_inconclusive")
+ROUTE_RULE_ONLY = CLAUDE_SIDE + ("architectural_deadlock", "opus_failed", "strict_scope", "verification_required")
+REVIEW_RULE_ONLY = ("architectural_deadlock", "opus_review_inconclusive", "quality_gate_change")
 HIGH_RISK = ("security_sensitive", "data_migration", "schema_change", "api_change",
              "concurrency_sensitive", "irreversible")
 # Where an exhaustive file allowlist is worth the lost autonomy. Everything else
@@ -294,12 +300,25 @@ def strict_scope_reason(s):
     return ",".join(risks) if risks else None
 
 
+def verify_required_reason(s):
+    """Why this change may only land on a passing acceptance run, or None.
+
+    High-risk and strict-scope work, and whatever the project itself requires.
+    Low-risk work (a typo, a doc edit) keeps an optional verification.
+    """
+    reasons = (["requested"] if flag(s, "verification_required") else []) + high_risk(s)
+    if flag(s, "strict_scope") and not reasons:
+        reasons = ["strict_scope"]
+    return ",".join(reasons) if reasons else None
+
+
 def lane_args(record):
     """The codex-lane.sh flags that carry this decision, so no one retypes them."""
     if record.get("lane") != "codex-implementer":
         return None
     args = "--model %s --effort %s --route-id %s" % (record["model"], record["effort"], record["id"])
-    return args + (" --strict-scope" if record.get("strict_scope") else "")
+    return (args + (" --strict-scope" if record.get("strict_scope") else "")
+            + (" --require-verify" if record.get("verify_required") else ""))
 
 
 def failures(s):
@@ -418,7 +437,7 @@ def deterministic_review(s):
                    if flag(s, k)]
     if exceptional:
         return "fable_review", "exceptional:" + ",".join(exceptional), True
-    risks = high_risk(s) + (["wide_blast_radius"] if flag(s, "wide_blast_radius") else [])
+    risks = high_risk(s) + [k for k in ("wide_blast_radius", "quality_gate_change") if flag(s, k)]
     if risks:
         return "opus_review", "high_risk:" + ",".join(risks), True
     if s.get("attempts", 1) >= 2:
@@ -697,10 +716,16 @@ def cmd_route(args, text):
     strict = strict_scope_reason(state)
     if strict and actual != "self":
         record.update(strict_scope=True, strict_scope_reason=strict)
+    required = verify_required_reason(state)
+    if required:
+        # A lane gets --require-verify; a Claude-side worker's acceptance is the
+        # orchestrator's, which it must run and pass before reporting done.
+        record.update(verify_required=True, verify_required_reason=required)
     append(record)
     record["lane_args"] = lane_args(record)
     lane_text = " ".join(str(lane[k]) for k in ("lane", "model", "effort") if lane.get(k))
-    record["declare"] = "route: %s (%s) -> %s" % (actual, decided_by if decided_by != "rule" else rule, lane_text)
+    record["declare"] = "route: %s (%s) -> %s%s" % (actual, decided_by if decided_by != "rule" else rule, lane_text,
+                                                  " [verify required]" if required else "")
     if ignored:
         record["ignored_keys"] = ignored
     emit(record)
@@ -760,30 +785,58 @@ def cmd_backfill(args):
     emit(record)
 
 
-def lane_verification(route_id):
-    """The acceptance result codex-lane.sh recorded for this id (last run), or None."""
-    result = None
+# Lane runs that leave a deliverable behind; the others (blocked, unavailable,
+# empty_diff) produced nothing and cannot replace an earlier run's evidence.
+DELIVERING = ("ok", "error", "timeout")
+
+
+def lane_evidence(route_id):
+    """(verify state, gate changes) for this id's latest deliverable.
+
+    The latest row wins, whichever it is: a lane run (its `verify`, "none" when
+    it ran without one) or an apply (its `verify_state`, which knows about stale
+    and partial). So an old pass never covers a newer unverified run.
+    """
+    state, gates = None, 0
     for rec in read_ledger():
-        if rec.get("id") == route_id and rec.get("event") == "attempt" and rec.get("verify") in ("pass", "fail"):
-            result = rec["verify"]
-    return result
+        if rec.get("id") != route_id:
+            continue
+        if rec.get("event") == "attempt" and rec.get("lane_status") in DELIVERING:
+            state = rec.get("verify") or "none"
+            gates = rec.get("gate_changes") or 0
+        elif rec.get("event") == "apply" and rec.get("verify_state"):
+            state = rec["verify_state"]
+    return state, gates
 
 
 def cmd_review(args, text):
     state, ignored = parse_state(text, REVIEW_FIELDS)
     # The harness already ran the acceptance command on a codex lane; use its
-    # result rather than asking anyone to restate it. A stated value wins.
-    source = "caller" if "verification_passed" in state else None
-    if source is None and args.id:
-        verdict = lane_verification(args.id)
-        if verdict:
-            state["verification_passed"], source = verdict == "pass", "lane"
+    # result rather than asking anyone to restate it. A stated value stands —
+    # except a stated pass against the lane's recorded fail, which is refused
+    # and logged as a conflict. "none" is no evidence either way.
+    lane_state, gates = lane_evidence(args.id) if args.id else (None, 0)
+    source, conflict, gate_conflict = ("caller" if "verification_passed" in state else None), None, None
+    if source and lane_state not in (None, "none") and state["verification_passed"] != (lane_state == "pass"):
+        # The lane's evidence disagrees. Only a recorded fail overrules the
+        # caller; stale/partial/not_run/infra_error may have been re-run by hand.
+        conflict = True
+        if lane_state == "fail":
+            state["verification_passed"], source = False, "lane"
+    elif source is None and lane_state not in (None, "none"):
+        state["verification_passed"], source = lane_state == "pass", "lane"
+    if gates:  # the lane's count wins, like a recorded fail: a stated false cannot drop the floor
+        if state.get("quality_gate_change") is False:
+            gate_conflict = True
+        state["quality_gate_change"] = True
     mode, imode = jev_mode(), imajev_mode()
     legacy, rule, obvious = deterministic_review(state)
     record = {"event": "review", "id": args.id or uuid.uuid4().hex[:12], "ts": now(),
               "policy_version": POLICY_VERSION,
               "task": args.task, "jev_mode": mode, "legacy_review": legacy, "rule": rule,
-              "verification_source": source}
+              "verification_source": source, "verification_state": lane_state,
+              "verification_conflict": conflict, "gate_conflict": gate_conflict,
+              "quality_gate_change": True if flag(state, "quality_gate_change") else None}
     if imode != "off":
         record.update(imajev_mode=imode, imajev_experiment_tag=experiment_tag())
     actual, decided_by = legacy, "rule" if obvious else "legacy"
@@ -827,7 +880,23 @@ def cmd_attempt(args):
               "reason": args.reason[:200] if args.reason else None,
               "unrouted": True if args.unrouted else None,
               "strict_scope": True if args.strict_scope else None,
-              "verify": args.verify, "verify_s": args.verify_s}
+              "verify": args.verify, "verify_s": args.verify_s,
+              "gate_changes": args.gates, "verify_required": True if args.verify_required else None}
+    append(record)
+    emit(record)
+
+
+VERIFY_STATES = ("pass", "fail", "not_run", "infra_error", "none", "stale", "partial")
+
+
+def cmd_apply(args):
+    """One codex-lane-apply.sh run, recorded by the script: what it judged the
+    acceptance result to be for what would land, and whether it was forced."""
+    record = {"event": "apply", "id": args.id, "ts": now(), "policy_version": POLICY_VERSION,
+              "verify_state": args.verify_state, "applied": args.applied, "refused": args.refused,
+              "verify_required": True if args.verify_required else None,
+              "forced": True if args.forced else None,
+              "reason": args.reason[:200] if args.reason else None}
     append(record)
     emit(record)
 
@@ -862,8 +931,8 @@ def cmd_outcome(args):
     verified = [a["verify"] for a in attempts if a.get("verify") in ("pass", "fail")]
     record.update(event="outcome", id=args.id, ts=now(), outcome=args.outcome,
                   attempts=count, duration_s=duration, note=args.note,
-                  verify=verified[-1] if verified else None,
-                  review_verdict=args.verdict, review_findings=args.findings)
+                  verify=verified[-1] if verified else None, verify_state=lane_evidence(args.id)[0],
+                  review_verdict=args.verdict, review_findings=args.findings, guardrails=args.guardrails)
     append(record)
     emit(record)
 
@@ -907,6 +976,7 @@ def main(argv=None):
     o.add_argument("--note", default=None)
     o.add_argument("--verdict", default=None, choices=VERDICTS, help="the reviewer's verdict, if reviewed")
     o.add_argument("--findings", type=int, default=None, help="how many review findings survived")
+    o.add_argument("--guardrails", type=int, default=None, help="how many GUARDRAIL proposals the review made")
     a = sub.add_parser("attempt", help="record one lane run (codex-lane.sh does this)")
     a.add_argument("--id", required=True)
     a.add_argument("--lane-status", required=True, choices=LANE_STATUSES)
@@ -919,8 +989,18 @@ def main(argv=None):
     a.add_argument("--reason", default=None)
     a.add_argument("--unrouted", action="store_true", help="the lane ran without a route id")
     a.add_argument("--strict-scope", action="store_true")
-    a.add_argument("--verify", default=None, choices=("pass", "fail", "not_run"))
+    a.add_argument("--verify", default=None, choices=("pass", "fail", "not_run", "infra_error"))
     a.add_argument("--verify-s", type=float, default=None)
+    a.add_argument("--gates", type=int, default=None, help="quality-gate paths among what can land")
+    a.add_argument("--verify-required", action="store_true")
+    p = sub.add_parser("apply", help="record one apply of a lane (codex-lane-apply.sh does this)")
+    p.add_argument("--id", required=True)
+    p.add_argument("--verify-state", required=True, choices=VERIFY_STATES)
+    p.add_argument("--applied", type=int, default=None)
+    p.add_argument("--refused", type=int, default=None)
+    p.add_argument("--verify-required", action="store_true")
+    p.add_argument("--forced", action="store_true")
+    p.add_argument("--reason", default=None)
     b = sub.add_parser("backfill", help="record a decision for a lane run without a route id (codex-lane.sh does this)")
     b.add_argument("--model", required=True)
     b.add_argument("--effort", required=True)
@@ -947,6 +1027,8 @@ def main(argv=None):
             cmd_attempt(args)
         elif args.command == "backfill":
             cmd_backfill(args)
+        elif args.command == "apply":
+            cmd_apply(args)
         else:
             cmd_config(args)
     except (StateError, OSError) as exc:

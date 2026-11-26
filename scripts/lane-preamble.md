@@ -9,7 +9,8 @@ Harness notes for this run. The task spec follows them.
   delete it when you finish.
 - After you exit, the harness runs the spec's verification command and
   records the result. Test as much as helps you while working, and end with
-  what you ran and what it printed.
+  what you ran and what it printed. Never weaken a test or CI/lint gate to
+  pass; name any you change.
 - If something you need is unreachable from here (a service, a credential, a
   browser, a database, a path outside this workspace), do not stub or guess
   around it. Stop, and end your final message with a line

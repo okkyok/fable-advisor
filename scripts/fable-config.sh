@@ -36,6 +36,15 @@
 # --- Routing ledger (permanent) ------------------------------------------------
 : "${FABLE_LEDGER:=$HOME/.claude/fable-advisor/routing.jsonl}"   # "off" disables writing
 
+# --- Quality gates (codex-lane.sh) -----------------------------------------------
+# A lane path matching these is reported as a quality-gate change and puts the
+# review at opus_review: the reviewer tells a real improvement from a weakened
+# gate. Generic names only (ERE); a project adds its own globs, one per line, in
+# a `.fable-gates` file at its repo root (read from the main tree, not the lane's).
+: "${FABLE_GATE_PATHS:=(^|/)(\.github/workflows/|\.gitlab-ci\.yml$|\.circleci/|Jenkinsfile$|\.pre-commit-config\.yaml$|\.fable-gates$|CODEOWNERS$|codecov\.ya?ml$|\.coveragerc$|(jest|vitest|playwright|cypress|karma)\.config\.[cm]?[jt]s$|pytest\.ini$|tox\.ini$|conftest\.py$|\.eslintrc|eslint\.config\.|biome\.jsonc?$|tsconfig[^/]*\.json$|mypy\.ini$|ruff\.toml$|\.golangci\.ya?ml$)}"
+: "${FABLE_TEST_PATHS:=(^|/)(tests?|__tests__|spec)/|[._-](test|spec)\.[A-Za-z]+$}"   # a deleted test, or a skip added to one, is a gate change
+: "${FABLE_SKIP_MARKERS:=\.(skip|only)\(|(^|[^A-Za-z_.])(xit|xdescribe|xtest)\(|@pytest\.mark\.(skip|xfail)|@unittest\.skip|t\.Skip\(|#\[ignore\]}"
+
 # --- Jev adaptive routing (optional; removable) ---------------------------------
 : "${FABLE_JEV_MODE:=shadow}"                  # off | shadow | active
 : "${FABLE_JEV_MIN_CONFIDENCE:=0.80}"          # below this, active mode uses the deterministic route
@@ -59,4 +68,4 @@ export FABLE_CODEX_DEFAULT_MODEL FABLE_CODEX_DEFAULT_EFFORT FABLE_CODEX_LIGHT_MO
        FABLE_SENIOR_MODEL FABLE_FRONTIER_MODEL \
        FABLE_LEDGER FABLE_JEV_MODE FABLE_JEV_MIN_CONFIDENCE FABLE_JEV_TIMEOUT FABLE_JEV_BACKEND \
        FABLE_IMAJEV_MODE FABLE_IMAJEV_URL FABLE_IMAJEV_TIMEOUT FABLE_IMAJEV_MIN_CONFIDENCE \
-       FABLE_IMAJEV_EXPERIMENT_TAG
+       FABLE_IMAJEV_EXPERIMENT_TAG FABLE_GATE_PATHS FABLE_TEST_PATHS FABLE_SKIP_MARKERS

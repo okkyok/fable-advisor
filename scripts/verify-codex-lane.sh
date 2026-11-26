@@ -52,7 +52,7 @@ Constraints: touch nothing but src/calc.py.
 SPEC
 
 out=$("$here/codex-lane.sh" --spec "$T/../spec.txt" --files "src/calc.py" --repo "$T" --effort low --timeout 300 \
-      --verify "python3 -c \"import sys;sys.path.insert(0,'src');import calc;assert calc.add(2,3)==5\"" 2>&1)
+      --require-verify --verify "python3 -c \"import sys;sys.path.insert(0,'src');import calc;assert calc.add(2,3)==5\"" 2>&1)
 echo "$out" | sed -n '/LANE REPORT/,$p' | sed 's/^/    /'
 wt=$(echo "$out" | awk '/worktree:/{print $2; exit}')
 
@@ -60,7 +60,13 @@ if [ -n "$wt" ] && [ -d "$wt" ]; then
   ok "lane ran in its own worktree"
   grep -q "OUTSIDE EXPECTED SCOPE" <<<"$out" && ng "lane wrote outside its Files (reported; applied only if codex named it)" || ok "lane stayed inside its Files"
   grep -q "verify:   pass" <<<"$out" && ok "the harness ran the acceptance command: pass" || ng "acceptance did not pass in the lane"
-  "$here/codex-lane-apply.sh" --worktree "$wt" --repo "$T" --files "src/calc.py" --remove >/dev/null 2>&1
+  # A required lane edited after its pass must not land; restored, it lands.
+  cp -p "$wt/src/calc.py" "$wt/../calc.py.keep"; echo "# edited after acceptance" >> "$wt/src/calc.py"
+  "$here/codex-lane-apply.sh" --worktree "$wt" --repo "$T" --remove >/dev/null 2>&1
+  [ $? -eq 6 ] && ! grep -q "edited after acceptance" "$T/src/calc.py" \
+    && ok "a required lane edited after acceptance is refused as stale" || ng "a stale required lane was landed"
+  mv "$wt/../calc.py.keep" "$wt/src/calc.py"
+  "$here/codex-lane-apply.sh" --worktree "$wt" --repo "$T" --remove >/dev/null 2>&1
   ( cd "$T" && python3 -c "import sys;sys.path.insert(0,'src');import calc;assert calc.add(2,3)==5" 2>/dev/null ) \
     && ok "applied code is correct" || ng "applied code failed verification"
   grep -q "OTHER LANE UNCOMMITTED WORK" "$T/docs/README.md" \

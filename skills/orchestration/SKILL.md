@@ -50,7 +50,7 @@ Fields (booleans default false): `mechanical`, `multi_component`,
 `security_sensitive`, `concurrency_sensitive`, `irreversible`, `context_bound`,
 `below_spawn_floor`, `judgment_dominated`, `claude_only_tool`,
 `architectural_deadlock`, `opus_failed`, `strict_scope`,
-`verification_available`; counts `file_count`, `prior_failures`.
+`verification_available`, `verification_required`; counts `file_count`, `prior_failures`.
 
 It owns every rule — risk floors, escalation after failures, eligibility, the
 optional Jev classifier (`FABLE_JEV_MODE=off|shadow|active`) — and returns one
@@ -67,7 +67,7 @@ refuses one that breaks a floor. Two choices are yours to make:
 ## Spec
 
 Objective · Files · Interfaces · Constraints · Verification (an exact command
-and its expected result). Files is the **expected scope**: a worker may change
+and its expected result; prefer the project's own). Files is the **expected scope**: a worker may change
 an adjacent file the objective directly needs and must name it and say why.
 Under `strict_scope` (the router sets it for security, migration and
 irreversible work) Files is an allowlist and nothing outside it lands.
@@ -84,8 +84,11 @@ Spawn `codex-implementer` with the spec plus `LANE_ARGS:` (from the router) and
 Every lane runs in its own disposable worktree, so parallel lanes are safe. The
 `LANE REPORT` prints the apply command; apply lands only what the scope allows,
 and refuses failed acceptance and anything the main tree changed since the lane
-started. Undo a lane with `git worktree remove`, never a checkout on the main
-tree.
+started. Under `verify_required` a lane needs `--verify` and apply lands only a
+pass still covering exactly what lands; `stale`, `partial`, `not_run`,
+`infra_error` are never verified (Claude-side: done only after a pass).
+`--force --reason` only on the user's say-so. Undo
+a lane with `git worktree remove`, never a checkout on the main tree.
 
 ## When a lane fails
 
@@ -110,7 +113,7 @@ Then ask the router: `fable-route.py review --id <route id>` with the review
 state (`file_count`, `lines_changed`, `mechanical`, the risk flags,
 `wide_blast_radius`, `lane_disagreement`, `opus_review_inconclusive`,
 `architectural_deadlock`, `silence_gap`, `attempts`; `verification_passed`
-comes from the lane when omitted). It returns `none`, `self_review`,
+and `quality_gate_change` come from the lane when omitted). It returns `none`, `self_review`,
 `opus_review` or `fable_review`. High risk is the senior reviewer's job; Fable
 is for when the senior review itself is contested.
 
@@ -123,6 +126,7 @@ is for when the senior review itself is contested.
   work. Send those claims in a second pass only when a finding contradicts one,
   a finding's withdrawal needs arguing, or the stakes justify another look.
 - `ESCALATE` from `opus-reviewer` → re-run the gate with `opus_review_inconclusive`.
+- `GUARDRAIL:` lines, a merge, a new repo, or changed gate config → read `guardrails.md` here.
 
 ## Ledger
 
@@ -131,7 +135,7 @@ themselves. Close each routed task with what only you know:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/fable-route.py" outcome --id <id> \
-  --outcome success|retry|failover|blocked|unavailable|timeout [--verdict ship|fix_first|rethink|escalate --findings N]
+  --outcome success|retry|failover|blocked|unavailable|timeout [--verdict ship|fix_first|rethink|escalate --findings N --guardrails N]
 ```
 
 `routing-report.py` summarises it per policy version.

@@ -3,6 +3,7 @@
 #   fix (default) · violation · nothing · quota · badmodel · sleep · crash (echoes the prompt, then fails)
 #   netdown (no API, hangs) · netdown_after_write (writes, then loses the network)
 #   extra (also writes src/helper.py and names it) · commit (commits its work in the worktree)
+#   weaken (adds a pytest skip to each spec'd file and deletes tests/test_mul.py, naming it)
 # The prompt it read (preamble + spec) is saved beside argv as prompt.$$.
 # For fix/violation it writes every path on the spec's "Files:" line, relative
 # to --cd — exactly where the real CLI would write.
@@ -34,7 +35,11 @@ esac
 files=$(printf '%s\n' "$spec" | sed -n 's/^Files: *//p' | tr ',' '\n')
 for f in $files; do
   mkdir -p "$cd_dir/$(dirname "$f")"
-  printf 'def add(a, b):\n    return a + b\n' > "$cd_dir/$f"
+  if [ "${STUB_CODEX:-fix}" = weaken ]; then
+    printf '@pytest.mark.skip(reason="flaky")\n' >> "$cd_dir/$f"
+  else
+    printf 'def add(a, b):\n    return a + b\n' > "$cd_dir/$f"
+  fi
 done
 if [ "${STUB_CODEX:-fix}" = netdown_after_write ]; then
   echo "ERROR: Reconnecting... waiting for network" >&2; sleep 30
@@ -44,6 +49,9 @@ echo "stub codex: implemented ${files//$'\n'/ }" > "$out"
 if [ "${STUB_CODEX:-fix}" = extra ]; then
   echo "def helper(): return 1" > "$cd_dir/src/helper.py"
   echo "Also changed src/helper.py: the new code imports it." >> "$out"
+fi
+if [ "${STUB_CODEX:-fix}" = weaken ]; then
+  rm -f "$cd_dir/tests/test_mul.py"; echo "Also deleted tests/test_mul.py: obsolete." >> "$out"
 fi
 if [ "${STUB_CODEX:-fix}" = commit ]; then
   git -C "$cd_dir" add -A >/dev/null 2>&1
